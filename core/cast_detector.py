@@ -8,6 +8,10 @@ AI 偏色检测器 — Color Cast Detector
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Literal
+import io
+import json
+import base64
+import requests
 import numpy as np
 from PIL import Image
 
@@ -168,16 +172,23 @@ class VLModelCastDetector(CastDetector):
         return f"VL模型 ({self.model})"
 
     def detect(self, image: np.ndarray) -> CastResult:
-        """
-        调用 VL 模型分析偏色。
-        需要实现：图片编码 → API 调用 → 解析 JSON 响应
-        """
-        prompt = self._build_prompt()
-        # TODO: 实现实际的 API 调用逻辑
-        # img_b64 = encode_image_to_base64(image)
-        # response = call_vlm_api(self.model, prompt, img_b64, ...)
-        # return self._parse_response(response)
-        raise NotImplementedError("需要实现 VL API 调用逻辑")
+        """调用 VL 模型 API 分析偏色"""
+        try:
+            img_b64 = _encode_image(image)
+            response_text = _call_vlm_api(
+                api_base=self.api_base,
+                api_key=self.api_key,
+                model=self.model,
+                prompt=self._build_prompt(),
+                image_b64=img_b64,
+                timeout=self.timeout,
+            )
+            return self._parse_response(response_text)
+        except Exception as e:
+            return CastResult(
+                "ok", 0, 0, 0.5,
+                detail=f"VL API 调用失败: {e}"
+            )
 
     def _build_prompt(self) -> str:
         return """Analyze this color-negative-corrected photo for color cast.
@@ -190,7 +201,6 @@ Respond in this exact JSON format:
 Check: Are whites/greys neutral? Sky natural? Brick/warm tones red-brown?"""
 
     def _parse_response(self, response: str) -> CastResult:
-        import json
         try:
             data = json.loads(response)
             return CastResult(
@@ -381,3 +391,97 @@ class DetectorFactory:
             f"未知后端模式: '{mode}'，"
             f"可用: {', '.join(creators.keys())}"
         )
+
+
+# ══════════════════════════════════════════════════════════
+#  Helper: 图片编码 & API 调用
+# ══════════════════════════════════════════════════════════
+
+
+def _encode_image(image: np.ndarray) -> str:
+    """将 numpy 图像编码为 base64 JPEG"""
+    img_pil = Image.fromarray(
+        image.astype(np.uint8) if image.dtype != np.uint8
+        else image
+    )
+    buf = io.BytesIO()
+    img_pil.save(buf, format="JPEG", quality=92)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
+def _call_vlm_api(
+    api_base: str,
+    api_key: str,
+    model: str,
+    prompt: str,
+    image_b64: str,
+    timeout: int = 30,
+) -> str:
+    """调用 OpenAI 兼容的 VL 模型 API
+
+    支持 OpenRouter / OpenAI / Ollama / 自定义等
+    """
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    # 检测是否是 OpenRouter（需要额外 header）
+    is_openrouter = "openrouter" in model or "openrouter" in api_base
+    if is_openrouter:
+        headers["HTTP-Referer"] = "https://github.com/Yachiyo1680/negative-color-corrector"
+        headers["X-Title"] = "Negative Color Corrector"
+
+    # 构建请求体
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_b64}"
+                        },
+                    },
+                ],
+            }
+        ],
+        "max_tokens": 256,
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+    }
+
+    # 确定 API URL
+    base = api_base.rstrip("/") if api_base else "https://openrouter.ai/api/v1"
+    url = f"{base}/chat/completions"
+
+    # 发送请求
+    resp = requests.post(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    # 提取响应文本
+    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    if not content:
+        raise ValueError("API 响应为空")
+
+    # 尝试提取 JSON（模型可能返回 markdown 包裹的 JSON）
+    content = content.strip()
+    if content.startswith("```"):
+        # 去掉 markdown 代码块
+        lines = content.split("\n")
+        content = "\n".join(
+            line for line in lines
+            if not line.startswith("```")
+        )
+
+    return content.strip()

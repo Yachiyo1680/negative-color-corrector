@@ -99,6 +99,8 @@ class Engine:
         detector = self._get_detector()
         img_out = img.copy()
         final_cast = CastResult("ok", 0, 0, 1.0)
+        # 累积调整比例（防止振荡）
+        accum_r, accum_g, accum_b = 1.0, 1.0, 1.0
 
         for i in range(self.config.max_iterations):
             # 检测偏色
@@ -109,10 +111,17 @@ class Engine:
                 final_cast = cast
                 break
 
-            # 根据偏色方向微调
-            img_out = self._adjust_for_cast(img_out, cast)
+            # 根据偏色方向微调（带阻尼系数，迭代越深调整越小）
+            damping = max(0.95 ** i, 0.5)  # 逐次衰减，最小保留 50%
+            img_out, adj_r, adj_g, adj_b = self._adjust_for_cast(
+                img_out, cast, damping
+            )
+            accum_r *= adj_r
+            accum_g *= adj_g
+            accum_b *= adj_b
             print(f"[Engine] 迭代 {i+1}: 检测到 {cast.cast_type} "
-                  f"(severity={cast.severity:.3f}) → 微调")
+                  f"(severity={cast.severity:.3f}) "
+                  f"累计调整 R={accum_r:.4f} G={accum_g:.4f} B={accum_b:.4f}")
 
         else:
             # 达到最大迭代次数
@@ -128,24 +137,30 @@ class Engine:
         )
 
     def _adjust_for_cast(self, img: np.ndarray,
-                         cast: CastResult) -> np.ndarray:
-        """根据偏色检测结果微调通道比例"""
+                         cast: CastResult,
+                         damping: float = 1.0) -> tuple:
+        """根据偏色检测结果微调通道比例
+
+        Returns:
+            (调整后图像, R调整系数, G调整系数, B调整系数)
+        """
         result = img.copy().astype(np.float32)
-        adjustment = 1.0 + cast.severity * 0.03  # 最大3%调整
+        # 调整幅度 = severity 映射到 1%~5%，再乘阻尼
+        magnitude = 1.0 + cast.severity * 0.04 * damping
 
         adjustments = {
-            "blue":     (1.000, 1.000, 1/adjustment),  # 偏蓝 → 减蓝
-            "cyan":     (1.000, 1.000, 1/adjustment),  # 偏青 → 减蓝
-            "green":    (1.000, 1/adjustment, 1.000),  # 偏绿 → 减绿
-            "yellow":   (1.000, 1.000, adjustment),    # 偏黄 → 加蓝
-            "magenta":  (1.000, adjustment, 1.000),    # 偏品红 → 加绿
-            "warm":     (1.000, 1.000, adjustment),    # 过暖 → 加蓝
-            "cool":     (1.000, 1.000, 1/adjustment),  # 过冷 → 减蓝
+            "blue":     (1.000, 1.000, 1/magnitude),  # 偏蓝 → 减蓝
+            "cyan":     (1.000, 1.000, 1/magnitude),  # 偏青 → 减蓝
+            "green":    (1.000, 1/magnitude, 1.000),  # 偏绿 → 减绿
+            "yellow":   (1.000, 1.000, magnitude),    # 偏黄 → 加蓝
+            "magenta":  (1.000, magnitude, 1.000),    # 偏品红 → 加绿
+            "warm":     (1.000, 1.000, magnitude),    # 过暖 → 加蓝
+            "cool":     (1.000, 1.000, 1/magnitude),  # 过冷 → 减蓝
         }
 
-        scale = adjustments.get(cast.cast_type, (1, 1, 1))
-        result[:,:,0] *= scale[0]
-        result[:,:,1] *= scale[1]
-        result[:,:,2] *= scale[2]
+        adj_r, adj_g, adj_b = adjustments.get(cast.cast_type, (1, 1, 1))
+        result[:,:,0] *= adj_r
+        result[:,:,1] *= adj_g
+        result[:,:,2] *= adj_b
 
-        return result
+        return result, adj_r, adj_g, adj_b
