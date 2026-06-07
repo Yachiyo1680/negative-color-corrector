@@ -11,6 +11,7 @@ from typing import Optional, Literal
 import io
 import json
 import base64
+import os
 import requests
 import numpy as np
 from PIL import Image
@@ -372,19 +373,21 @@ class DetectorFactory:
 
         # ── Auto 模式：逐个尝试 ──
         if mode == "auto":
-            # 1st: ONNX
-            try:
-                return creators["onnx"]()
-            except Exception:
-                pass
-            # 2nd: VL API
-            try:
-                return creators["vlm_api"]()
-            except Exception:
-                pass
+            # 1st: ONNX (只有模型文件存在时才尝试)
+            onnx_path = config.get("onnx_model_path", "models/cast_detector.onnx")
+            if os.path.exists(onnx_path):
+                try:
+                    return creators["onnx"]()
+                except Exception:
+                    pass
+            # 2nd: VL API (有 API Key 时才尝试)
+            if config.get("vlm_api_key"):
+                try:
+                    return creators["vlm_api"]()
+                except Exception:
+                    pass
             # 3rd: heuristic（一定有）
-            print("[DetectorFactory] ONNX / VL API 均不可用，"
-                  "回退到启发式算法")
+            print("[DetectorFactory] 自动回退到启发式算法")
             return HeuristicCastDetector()
 
         raise ValueError(
