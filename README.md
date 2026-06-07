@@ -134,7 +134,7 @@ result_B = clamp(input_B × (1.0 - 0.06 × warm_factor), 0, 255)
 
 **可选风格预设：**
 | 风格 | R | G | B |
-|------|---|---|---|
+|------|---|---|---|---|
 | 自然 | +4% | +2% | -6% |
 | Kodak Gold | +6% | +3% | -8% |
 | Fuji Superia | +3% | +1% | -5% |
@@ -267,3 +267,39 @@ AI 模型判断以下维度：
 | `ui/` | 用户界面层 |
 | `config.py` | 默认参数配置 |
 | `main.py` | 启动入口 |
+
+---
+
+## 当前完成状态
+
+| 模块 | 状态 |
+|------|------|
+| `core/invert.py` | ✅ 反相 |
+| `core/mask_analyzer.py` | ✅ 色罩分析（三策略） |
+| `core/channel_comp.py` | ✅ 通道补偿 |
+| `core/auto_levels.py` | ✅ 智能色阶 |
+| `core/warmth.py` | ✅ 暖调控制（4预设） |
+| `core/cast_detector.py` | ✅ 启发式 + VL API + 工厂模式 |
+| `core/engine.py` | ✅ 校色引擎（含反馈闭环） |
+| `core/credential_store.py` | ✅ API Key 安全存储 |
+| `core/config_manager.py` | ✅ JSON5 配置管理 |
+| `core/model_provider.py` | ✅ 多 Provider 管理 |
+| `main.py` | ✅ CLI 入口 |
+| `ui/app.py` | ✅ Gradio Web UI |
+
+## 快速开始
+
+```bash
+# 安装依赖
+pip install numpy Pillow requests
+
+# CLI 校色（负片）
+python main.py scan.tiff
+
+# CLI 校色（正片 + Kodak Gold 暖调）
+python main.py scan.tiff --film-type positive --warmth kodak_gold
+
+# Web UI（带 Gradio）
+pip install gradio
+python main.py --gui
+```
