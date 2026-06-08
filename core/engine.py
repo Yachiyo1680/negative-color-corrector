@@ -28,6 +28,10 @@ class CorrectionConfig:
     max_iterations: int = 10           # AI反馈最大迭代次数
     cast_threshold: float = 0.15       # 偏色容忍度 (低于此值视为OK)
     detector_mode: str = "auto"        # "heuristic" | "onnx" | "vlm_api" | "auto"
+    # VLM API 配置（仅在 detector_mode="vlm_api" 时使用）
+    vlm_api_key: str = ""
+    vlm_api_base: str = ""
+    vlm_model: str = "openai/gpt-4o-mini"
 
 
 @dataclass
@@ -52,6 +56,9 @@ class Engine:
         if self.detector is None:
             self.detector = DetectorFactory.create({
                 "detector_mode": self.config.detector_mode,
+                "vlm_api_key": self.config.vlm_api_key,
+                "vlm_api_base": self.config.vlm_api_base,
+                "vlm_model": self.config.vlm_model,
             })
         return self.detector
 

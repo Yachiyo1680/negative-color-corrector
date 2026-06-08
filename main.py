@@ -90,6 +90,9 @@ def _run_cli(args):
         max_iterations=args.max_iter,
         cast_threshold=args.threshold,
         detector_mode=args.detector,
+        vlm_api_key=args.api_key,
+        vlm_api_base=args.api_base,
+        vlm_model=args.model,
     )
 
     # 执行校色
