@@ -4,11 +4,13 @@
 
 用法：
     python main.py <image> [options]
+    python main.py <img1> <img2> ... [options]   ← 批量处理
 
     python main.py scan.tiff
     python main.py scan.tiff --film-type positive --warmth kodak_gold
     python main.py scan.tiff --output result.jpg
     python main.py scan.tiff --detector heuristic
+    python main.py img1.tiff img2.tiff img3.tiff -w none   ← 批量
 """
 
 import os
@@ -17,6 +19,8 @@ import argparse
 from PIL import Image
 import numpy as np
 
+BATCH_LIMIT = 40
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -24,8 +28,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("input", nargs="?", default="",
-                        help="输入图片路径（GUI模式不需要）")
+    parser.add_argument("input", nargs="*", default=[],
+                        help="输入图片路径（支持多个，批量处理最多40张）")
     parser.add_argument("-o", "--output", default="",
                         help="输出路径（默认在原文件名上加 _corrected）")
     parser.add_argument("-f", "--film-type", default="negative",
@@ -68,11 +72,16 @@ def main():
         parser.print_usage()
         print("[NCC] 错误: CLI 模式需要输入图片路径，使用 --gui 启动图形界面")
         sys.exit(1)
+
+    if len(args.input) > BATCH_LIMIT:
+        print(f"[NCC] 错误: 一次最多处理 {BATCH_LIMIT} 张图片，当前 {len(args.input)} 张")
+        sys.exit(1)
+
     _run_cli(args)
 
 
 def _run_cli(args):
-    """CLI 模式执行校色"""
+    """CLI 模式执行校色（支持单张和批量）"""
     from core import (
         Engine, CorrectionConfig, ConfigManager,
         apply_channel_compensation, manual_compensation,
@@ -81,8 +90,8 @@ def _run_cli(args):
 
     # ── 加载配置文件（~/.negative-corrector/config.json5）──
     cfg_mgr = ConfigManager()
-    cfg_mgr.init_default_config()      # 不存在则创建默认配置
-    cfg = cfg_mgr.load()               # 加载配置
+    cfg_mgr.init_default_config()
+    cfg = cfg_mgr.load()
 
     # 配置文件值作为基础，CLI 参数覆盖
     film_type = args.film_type or cfg.correction.film_type
@@ -96,14 +105,7 @@ def _run_cli(args):
     max_iter = args.max_iter if args.max_iter != 10 else cfg.detector.max_iterations
     threshold = args.threshold if args.threshold != 0.15 else cfg.detector.cast_threshold
 
-    # 加载图片
-    print(f"[NCC] 加载: {args.input}")
-    img_pil = Image.open(args.input)
-    if img_pil.mode != "RGB":
-        img_pil = img_pil.convert("RGB")
-    img = np.array(img_pil, dtype=np.float32)
-
-    # 配置引擎
+    # 配置引擎（各批处理图片共享同一配置）
     config = CorrectionConfig(
         film_type=film_type,
         warmth_style=warmth_style,
@@ -117,27 +119,58 @@ def _run_cli(args):
         vlm_model=model,
     )
 
-    # 执行校色
-    print(f"[NCC] 开始校色 (胶片类型: {args.film_type})")
-    engine = Engine(config)
-    result = engine.correct(img)
+    inputs = args.input  # 可能有多张图
+    is_batch = len(inputs) > 1
+    total = len(inputs)
 
-    # 输出信息
-    print(f"[NCC] 完成!")
-    print(f"     色罩分析: {result.mask_info.method} "
-          f"(scale R={result.mask_info.scale_r:.3f}, "
-          f"G={result.mask_info.scale_g:.3f}, "
-          f"B={result.mask_info.scale_b:.3f})")
-    print(f"     暖调: {result.warm_style}")
-    print(f"     偏色检测迭代: {result.iterations} 次")
-    print(f"     最终偏色: {result.final_cast.cast_type} "
-          f"(severity={result.final_cast.severity:.3f})")
+    if is_batch:
+        print(f"\n{'='*50}")
+        print(f"  📦 批量处理 {total} 张图片")
+        print(f"{'='*50}")
 
-    # 保存
-    output_path = args.output or _default_output(args.input)
-    out_pil = Image.fromarray(result.image)
-    out_pil.save(output_path)
-    print(f"[NCC] 已保存: {output_path}")
+    for idx, input_path in enumerate(inputs, 1):
+        try:
+            if is_batch:
+                print(f"\n--- [{idx}/{total}] {os.path.basename(input_path)} ---")
+
+            # 加载图片
+            print(f"[NCC] 加载: {input_path}")
+            img_pil = Image.open(input_path)
+            if img_pil.mode != "RGB":
+                img_pil = img_pil.convert("RGB")
+            img = np.array(img_pil, dtype=np.float32)
+
+            # 执行校色
+            engine = Engine(config)
+            result = engine.correct(img)
+
+            # 保存
+            output_path = args.output or _default_output(input_path)
+            out_pil = Image.fromarray(np.clip(result.image, 0, 255).astype(np.uint8))
+            out_pil.save(output_path)
+
+            # 单图模式输出详细信息，批量模式只输出文件名
+            if is_batch:
+                print(f"  ✅ {os.path.basename(output_path)}")
+            else:
+                print(f"[NCC] 完成!")
+                print(f"     色罩分析: {result.mask_info.method} "
+                      f"(scale R={result.mask_info.scale_r:.3f}, "
+                      f"G={result.mask_info.scale_g:.3f}, "
+                      f"B={result.mask_info.scale_b:.3f})")
+                print(f"     暖调: {result.warm_style}")
+                print(f"     偏色检测迭代: {result.iterations} 次")
+                print(f"     最终偏色: {result.final_cast.cast_type} "
+                      f"(severity={result.final_cast.severity:.3f})")
+                print(f"[NCC] 已保存: {output_path}")
+
+        except Exception as e:
+            print(f"[NCC] ❌ 处理失败 [{idx}/{total}] {input_path}: {e}")
+
+    if is_batch:
+        print(f"\n{'='*50}")
+        print(f"  ✅ 批量处理完成 ({total} 张)")
+        print(f"{'='*50}\n")
 
 
 def _default_output(input_path: str) -> str:
