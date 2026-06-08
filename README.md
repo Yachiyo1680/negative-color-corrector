@@ -287,19 +287,51 @@ AI 模型判断以下维度：
 | `main.py` | ✅ CLI 入口 |
 | `ui/app.py` | ✅ Gradio Web UI |
 
+## 效果对比
+
+### IMG181（室内纸张）
+
+![IMG181 对比](labeled_181_cn.jpg)
+
+`-w none`（无色偏）模式下，启发式校色和 VLM 校色结果完全一致，白底更干净，消除了暖调预设带来的黄调。
+
+### IMG182（户外建筑）
+
+![IMG182 对比](labeled_182_cn.jpg)
+
+同样，无色偏模式下的校色结果更中性自然。建筑灰调还原准确，天空和树叶的颜色也更真实。
+
+---
+
 ## 快速开始
 
 ```bash
 # 安装依赖
 pip install numpy Pillow requests
 
-# CLI 校色（负片）
-python main.py scan.tiff
+# CLI 校色（负片，无色偏）
+python main.py scan.tiff -w none
+
+# CLI 校色（负片，自然暖调）
+python main.py scan.tiff -w natural
 
 # CLI 校色（正片 + Kodak Gold 暖调）
 python main.py scan.tiff --film-type positive --warmth kodak_gold
+
+# 使用 VLM 模型做偏色分析（需 OpenRouter API Key）
+python main.py scan.tiff -w none -d vlm_api --model "openai/gpt-4o-mini"
 
 # Web UI（带 Gradio）
 pip install gradio
 python main.py --gui
 ```
+
+### 暖调风格选项
+
+| 参数 | 效果 | R调整 | G调整 | B调整 |
+|------|------|-------|-------|-------|
+| `-w none` | 无色偏，最自然 | 0% | 0% | 0% |
+| `-w natural` | 自然暖调（默认）| +4% | +2% | -6% |
+| `-w kodak_gold` | Kodak Gold 风格 | +6% | +3% | -8% |
+| `-w fuji_superia` | Fuji Superia 风格 | +3% | +1% | -5% |
+| `-w cool` | 冷调 | 0% | 0% | -2% |
