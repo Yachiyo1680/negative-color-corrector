@@ -69,10 +69,27 @@ def main():
 def _run_cli(args):
     """CLI 模式执行校色"""
     from core import (
-        Engine, CorrectionConfig,
+        Engine, CorrectionConfig, ConfigManager,
         apply_channel_compensation, manual_compensation,
         analyze_mask, invert, auto_levels, apply_warmth,
     )
+
+    # ── 加载配置文件（~/.negative-corrector/config.json5）──
+    cfg_mgr = ConfigManager()
+    cfg_mgr.init_default_config()      # 不存在则创建默认配置
+    cfg = cfg_mgr.load()               # 加载配置
+
+    # 配置文件值作为基础，CLI 参数覆盖
+    film_type = args.film_type or cfg.correction.film_type
+    warmth_style = args.warmth or cfg.correction.warmth_style
+    warmth_strength = args.strength if args.strength != 1.0 else cfg.correction.warmth_strength
+    levels_percentile = args.percentile if args.percentile != 0.2 else cfg.correction.levels_percentile
+    detector_mode = args.detector if args.detector != "auto" else cfg.detector.mode
+    api_key = args.api_key or cfg_mgr.get_api_key("openrouter") or cfg_mgr.get_api_key("custom")
+    api_base = args.api_base or cfg.detector.api_base
+    model = args.model if args.model != "openai/gpt-4o-mini" else cfg.detector.model
+    max_iter = args.max_iter if args.max_iter != 10 else cfg.detector.max_iterations
+    threshold = args.threshold if args.threshold != 0.15 else cfg.detector.cast_threshold
 
     # 加载图片
     print(f"[NCC] 加载: {args.input}")
@@ -83,16 +100,16 @@ def _run_cli(args):
 
     # 配置引擎
     config = CorrectionConfig(
-        film_type=args.film_type,
-        warmth_style=args.warmth,
-        warmth_strength=args.strength,
-        levels_percentile=args.percentile,
-        max_iterations=args.max_iter,
-        cast_threshold=args.threshold,
-        detector_mode=args.detector,
-        vlm_api_key=args.api_key,
-        vlm_api_base=args.api_base,
-        vlm_model=args.model,
+        film_type=film_type,
+        warmth_style=warmth_style,
+        warmth_strength=warmth_strength,
+        levels_percentile=levels_percentile,
+        max_iterations=max_iter,
+        cast_threshold=threshold,
+        detector_mode=detector_mode,
+        vlm_api_key=api_key,
+        vlm_api_base=api_base,
+        vlm_model=model,
     )
 
     # 执行校色
