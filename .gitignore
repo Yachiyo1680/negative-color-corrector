@@ -25,3 +25,10 @@ venv/
 
 # Config (user-specific)
 config.local.json5
+
+# Test images and output results
+test_*.jpg
+result_*.jpg
+compare_*.jpg
+*.TIF
+*.tiff
