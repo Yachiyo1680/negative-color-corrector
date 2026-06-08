@@ -31,8 +31,8 @@ def main():
                         choices=["negative", "positive"],
                         help="胶片类型: negative(负片) / positive(正片)")
     parser.add_argument("-w", "--warmth", default="natural",
-                        choices=["natural", "kodak_gold", "fuji_superia", "cool"],
-                        help="暖调风格")
+                        choices=["none", "natural", "kodak_gold", "fuji_superia", "cool"],
+                        help="暖调风格 (none=无色偏)")
     parser.add_argument("-s", "--strength", type=float, default=1.0,
                         help="暖调强度 0.0~2.0")
     parser.add_argument("-d", "--detector", default="auto",
