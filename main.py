@@ -24,7 +24,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("input", help="输入图片路径")
+    parser.add_argument("input", nargs="?", default="",
+                        help="输入图片路径（GUI模式不需要）")
     parser.add_argument("-o", "--output", default="",
                         help="输出路径（默认在原文件名上加 _corrected）")
     parser.add_argument("-f", "--film-type", default="negative",
@@ -63,6 +64,10 @@ def main():
         return
 
     # ── CLI 模式 ──
+    if not args.input:
+        parser.print_usage()
+        print("[NCC] 错误: CLI 模式需要输入图片路径，使用 --gui 启动图形界面")
+        sys.exit(1)
     _run_cli(args)
 
 
