@@ -97,7 +97,12 @@ class Engine:
         img = auto_levels(img, percentile=self.config.levels_percentile)
         print("[Engine] 智能色阶完成")
 
-        # ── Step 5: AI 偏色检测 + 修正（先校色，再叠暖调） ──
+        # ── Step 5: 暖调控制 ──
+        img = apply_warmth(img, style=self.config.warmth_style,
+                           strength=self.config.warmth_strength)
+        print(f"[Engine] 暖调完成: {self.config.warmth_style}")
+
+        # ── Step 6: AI 偏色检测 + 修正 ──
         detector = self._get_detector()
         img_out = img.copy()
 
@@ -105,15 +110,12 @@ class Engine:
         is_heuristic = detector.name() == "heuristic"
 
         if is_heuristic:
+            # 启发式：迭代反馈
             img_out, final_cast, iters = self._heuristic_feedback(detector, img_out)
         else:
+            # VLM/ONNX：单次修正（防模型发散）
             img_out, final_cast = self._vlm_single_shot(detector, img_out)
             iters = 1
-
-        # ── Step 6: 暖调控制（在偏色修正之后叠加热调风格） ──
-        img_out = apply_warmth(img_out, style=self.config.warmth_style,
-                               strength=self.config.warmth_strength)
-        print(f"[Engine] 暖调完成: {self.config.warmth_style}")
 
         return CorrectionResult(
             image=np.clip(img_out, 0, 255).astype(np.uint8),
