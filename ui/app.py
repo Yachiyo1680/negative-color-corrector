@@ -17,6 +17,7 @@ import gradio as gr
 from core import Engine, CorrectionConfig
 from core.warmth import get_warmth_presets
 from core.cast_detector import get_available_backends
+from core.config_manager import ConfigManager
 
 
 def _correct(
@@ -32,11 +33,22 @@ def _correct(
 
     img = np.array(input_img, dtype=np.float32)
 
+    # 加载配置文件中的 API Key
+    cfg_mgr = ConfigManager()
+    cfg_mgr.init_default_config()
+    cfg = cfg_mgr.load()
+    api_key = cfg_mgr.get_api_key("openrouter") or cfg_mgr.get_api_key("custom")
+    api_base = cfg.detector.api_base
+    model = cfg.detector.model
+
     config = CorrectionConfig(
         film_type=film_type,
         warmth_style=warmth_style,
         warmth_strength=warmth_strength,
         detector_mode=detector_mode,
+        vlm_api_key=api_key,
+        vlm_api_base=api_base,
+        vlm_model=model,
     )
 
     try:
