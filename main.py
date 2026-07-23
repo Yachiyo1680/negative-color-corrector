@@ -5,12 +5,14 @@
 用法：
     python main.py <image> [options]
     python main.py <img1> <img2> ... [options]   ← 批量处理
+    python main.py <folder> -r [options]         ← 文件夹批量（含子文件夹）
 
     python main.py scan.tiff
     python main.py scan.tiff --film-type positive --warmth kodak_gold
     python main.py scan.tiff --output result.jpg
     python main.py scan.tiff --detector heuristic
     python main.py img1.tiff img2.tiff img3.tiff -w none   ← 批量
+    python main.py ./scans/ -r -w none                       ← 文件夹递归
 """
 
 import os
@@ -20,6 +22,7 @@ from PIL import Image
 import numpy as np
 
 BATCH_LIMIT = 40
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
 
 
 def main():
@@ -59,6 +62,8 @@ def main():
                         help="启动 GUI 界面（而非 CLI 模式）")
     parser.add_argument("--gui", action="store_true",
                         help="启动 GUI 界面")
+    parser.add_argument("-r", "--recursive", action="store_true",
+                        help="递归处理输入文件夹中的子文件夹")
 
     args = parser.parse_args()
 
@@ -73,11 +78,40 @@ def main():
         print("[NCC] 错误: CLI 模式需要输入图片路径，使用 --gui 启动图形界面")
         sys.exit(1)
 
+    # 展开文件夹输入为图片文件列表
+    args.input = _expand_inputs(args.input, args.recursive)
+
+    if not args.input:
+        print("[NCC] 错误: 输入路径中未找到图片文件")
+        sys.exit(1)
+
     if len(args.input) > BATCH_LIMIT:
         print(f"[NCC] 错误: 一次最多处理 {BATCH_LIMIT} 张图片，当前 {len(args.input)} 张")
         sys.exit(1)
 
     _run_cli(args)
+
+
+def _expand_inputs(inputs: list[str], recursive: bool) -> list[str]:
+    """将输入路径中的文件夹展开为图片文件列表"""
+    result = []
+    for path in inputs:
+        if os.path.isfile(path):
+            result.append(path)
+        elif os.path.isdir(path):
+            if recursive:
+                for root, _dirs, files in os.walk(path):
+                    for f in sorted(files):
+                        if os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS:
+                            result.append(os.path.join(root, f))
+            else:
+                for f in sorted(os.listdir(path)):
+                    full = os.path.join(path, f)
+                    if os.path.isfile(full) and os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS:
+                        result.append(full)
+        else:
+            print(f"[NCC] 警告: 路径不存在，已跳过: {path}")
+    return result
 
 
 def _run_cli(args):
@@ -99,9 +133,21 @@ def _run_cli(args):
     warmth_strength = args.strength if args.strength != 1.0 else cfg.correction.warmth_strength
     levels_percentile = args.percentile if args.percentile != 0.2 else cfg.correction.levels_percentile
     detector_mode = args.detector if args.detector != "auto" else cfg.detector.mode
-    api_key = args.api_key or cfg_mgr.get_api_key("openrouter") or cfg_mgr.get_api_key("custom")
-    api_base = args.api_base or cfg.detector.api_base
+    api_key = (args.api_key
+               or cfg_mgr.get_api_key("openrouter")
+               or cfg_mgr.get_api_key("openai")
+               or cfg_mgr.get_api_key("gemini")
+               or cfg_mgr.get_api_key("custom"))
     model = args.model if args.model != "openai/gpt-4o-mini" else cfg.detector.model
+    # api_base: 用户指定 > 配置文件 > 根据模型名自动推断
+    api_base = args.api_base or cfg.detector.api_base
+    if not api_base and api_key:
+        from core.model_provider import PROVIDERS
+        model_lower = model.lower()
+        if "gemini" in model_lower:
+            api_base = PROVIDERS["gemini"].base_url
+        elif "gpt" in model_lower:
+            api_base = PROVIDERS["openai"].base_url
     max_iter = args.max_iter if args.max_iter != 10 else cfg.detector.max_iterations
     threshold = args.threshold if args.threshold != 0.15 else cfg.detector.cast_threshold
 
@@ -144,6 +190,10 @@ def _run_cli(args):
             engine = Engine(config)
             result = engine.correct(img)
 
+            # 检测器降级警告
+            if result.detector_warning:
+                print(f"[NCC] ⚠️ {result.detector_warning}")
+
             # 保存
             output_path = args.output or _default_output(input_path)
             out_pil = Image.fromarray(np.clip(result.image, 0, 255).astype(np.uint8))
@@ -174,9 +224,12 @@ def _run_cli(args):
 
 
 def _default_output(input_path: str) -> str:
-    """生成默认输出路径"""
-    base, ext = os.path.splitext(input_path)
-    return f"{base}_corrected{ext}"
+    """生成默认输出路径：原文件夹下的 _corrected/ 子目录"""
+    directory = os.path.dirname(input_path) or "."
+    filename = os.path.basename(input_path)
+    output_dir = os.path.join(directory, "_corrected")
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, filename)
 
 
 def _launch_gui():

@@ -49,6 +49,7 @@ class ProvidersConfig:
     """Provider API 配置（敏感信息用环境变量引用）"""
     openrouter_api_key: str = "${OPENROUTER_API_KEY}"
     openai_api_key: str = "${OPENAI_API_KEY}"
+    gemini_api_key: str = "${GEMINI_API_KEY}"
     custom_api_key: str = "${NCC_API_KEY}"
     custom_api_base: str = ""
 
@@ -200,6 +201,9 @@ DEFAULT_CONFIG_CONTENT = """// ~/.negative-corrector/config.json5
 
     // OpenAI API Key
     openai_api_key: "${OPENAI_API_KEY}",
+
+    // Google Gemini API Key
+    gemini_api_key: "${GEMINI_API_KEY}",
 
     // 自定义 API Key（OpenAI 兼容接口）
     custom_api_key: "${NCC_API_KEY}",
@@ -357,12 +361,14 @@ class ConfigManager:
         key_map = {
             "openrouter": "openrouter_api_key",
             "openai": "openai_api_key",
+            "gemini": "gemini_api_key",
             "custom": "custom_api_key",
         }
 
         env_map = {
             "openrouter": "OPENROUTER_API_KEY",
             "openai": "OPENAI_API_KEY",
+            "gemini": "GEMINI_API_KEY",
             "custom": "NCC_API_KEY",
         }
 
@@ -411,6 +417,10 @@ class ConfigManager:
                 openai_api_key=str(
                     providers_data.get("openai_api_key",
                                        "${OPENAI_API_KEY}")
+                ),
+                gemini_api_key=str(
+                    providers_data.get("gemini_api_key",
+                                       "${GEMINI_API_KEY}")
                 ),
                 custom_api_key=str(
                     providers_data.get("custom_api_key", "${NCC_API_KEY}")

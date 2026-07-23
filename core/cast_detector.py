@@ -173,23 +173,21 @@ class VLModelCastDetector(CastDetector):
         return f"VL模型 ({self.model})"
 
     def detect(self, image: np.ndarray) -> CastResult:
-        """调用 VL 模型 API 分析偏色"""
-        try:
-            img_b64 = _encode_image(image)
-            response_text = _call_vlm_api(
-                api_base=self.api_base,
-                api_key=self.api_key,
-                model=self.model,
-                prompt=self._build_prompt(),
-                image_b64=img_b64,
-                timeout=self.timeout,
-            )
-            return self._parse_response(response_text)
-        except Exception as e:
-            return CastResult(
-                "ok", 0, 0, 0.5,
-                detail=f"VL API 调用失败: {e}"
-            )
+        """调用 VL 模型 API 分析偏色
+
+        Raises:
+            RuntimeError: API 调用失败时抛出，包含原始错误信息
+        """
+        img_b64 = _encode_image(image)
+        response_text = _call_vlm_api(
+            api_base=self.api_base,
+            api_key=self.api_key,
+            model=self.model,
+            prompt=self._build_prompt(),
+            image_b64=img_b64,
+            timeout=self.timeout,
+        )
+        return self._parse_response(response_text)
 
     def _build_prompt(self) -> str:
         return """Analyze this color-negative-corrected photo for color cast.
@@ -204,14 +202,21 @@ Check: Are whites/greys neutral? Sky natural? Brick/warm tones red-brown?"""
     def _parse_response(self, response: str) -> CastResult:
         try:
             data = json.loads(response)
+            cast_type = data.get("cast", "ok")
+            severity = float(data.get("severity", 0))
+            neutral_score = float(data.get("neutral_score", 0.7))
+            detail = data.get("detail", "")
+            print(f"[VLM] cast={cast_type}, severity={severity:.3f}, "
+                  f"neutral_score={neutral_score:.2f}, detail={detail}")
             return CastResult(
-                cast_type=data.get("cast", "ok"),
-                severity=float(data.get("severity", 0)),
+                cast_type=cast_type,
+                severity=severity,
                 confidence=0.85,
-                neutral_score=float(data.get("neutral_score", 0.7)),
-                detail=data.get("detail", ""),
+                neutral_score=neutral_score,
+                detail=detail,
             )
         except (json.JSONDecodeError, KeyError, ValueError):
+            print(f"[VLM] 响应解析失败: {response[:200]}")
             return CastResult("ok", 0, 0, 0.5,
                               detail="模型响应解析失败")
 
@@ -329,7 +334,7 @@ class DetectorFactory:
     """
 
     @staticmethod
-    def create(config: dict) -> CastDetector:
+    def create(config: dict) -> tuple[CastDetector, str]:
         """创建偏色检测器
 
         Args:
@@ -339,12 +344,13 @@ class DetectorFactory:
                 - vlm_api_base/vlm_api_key/vlm_model/vlm_timeout
 
         Returns:
-            CastDetector 实例
+            (CastDetector 实例, 警告信息) — 警告非空表示发生了降级回退
 
         Raises:
             RuntimeError: 用户指定的后端不可用
         """
         mode = config.get("detector_mode", "auto")
+        warning = ""
 
         creators = {
             "heuristic": lambda: HeuristicCastDetector(),
@@ -364,7 +370,7 @@ class DetectorFactory:
         # ── 用户明确指定的单一后端 ──
         if mode != "auto" and mode in creators:
             try:
-                return creators[mode]()
+                return creators[mode](), ""
             except (RuntimeError, ImportError, FileNotFoundError) as e:
                 raise RuntimeError(
                     f"后端 '{mode}' 当前不可用: {e}\n"
@@ -372,23 +378,30 @@ class DetectorFactory:
                 )
 
         # ── Auto 模式：逐个尝试 ──
+        vlm_error = ""
         if mode == "auto":
             # 1st: ONNX (只有模型文件存在时才尝试)
             onnx_path = config.get("onnx_model_path", "models/cast_detector.onnx")
             if os.path.exists(onnx_path):
                 try:
-                    return creators["onnx"]()
+                    return creators["onnx"](), ""
                 except Exception:
                     pass
             # 2nd: VL API (有 API Key 时才尝试)
             if config.get("vlm_api_key"):
                 try:
-                    return creators["vlm_api"]()
-                except Exception:
-                    pass
+                    return creators["vlm_api"](), ""
+                except Exception as e:
+                    vlm_error = str(e)
             # 3rd: heuristic（一定有）
-            print("[DetectorFactory] 自动回退到启发式算法")
-            return HeuristicCastDetector()
+            if vlm_error:
+                warning = f"VLM 不可用，已回退到启发式算法（原因: {vlm_error}）"
+            elif not config.get("vlm_api_key"):
+                warning = "VLM 不可用（未配置 API Key），已回退到启发式算法"
+            else:
+                warning = "VLM 不可用，已回退到启发式算法"
+            print(f"[DetectorFactory] {warning}")
+            return HeuristicCastDetector(), warning
 
         raise ValueError(
             f"未知后端模式: '{mode}'，"
@@ -469,7 +482,16 @@ def _call_vlm_api(
         json=payload,
         timeout=timeout,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        # 尝试提取 API 返回的错误信息
+        try:
+            err_body = resp.json()
+            err_msg = err_body.get("error", {}).get("message", resp.text[:200])
+        except Exception:
+            err_msg = resp.text[:200]
+        raise RuntimeError(
+            f"VLM API 错误 {resp.status_code}: {err_msg}"
+        )
     data = resp.json()
 
     # 提取响应文本
