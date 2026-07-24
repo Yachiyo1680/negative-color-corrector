@@ -2,7 +2,7 @@
 模型 Provider 管理 — Model Provider
 
 管理 VL 模型的 Provider 选择、API 配置、模型列表。
-支持多个后端：OpenRouter / OpenAI / Ollama / 自定义
+支持多个后端：OpenRouter / OpenAI / Gemini / Ollama / 自定义
 """
 
 from dataclasses import dataclass, field
@@ -48,6 +48,13 @@ PROVIDERS = {
         base_url="https://api.openai.com/v1",
         api_key_env="OPENAI_API_KEY",
         default_model="gpt-4o-mini",
+    ),
+    "gemini": Provider(
+        id="gemini",
+        label="Google Gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key_env="GEMINI_API_KEY",
+        default_model="gemini-2.0-flash",
     ),
     "ollama": Provider(
         id="ollama",
@@ -124,9 +131,7 @@ def fetch_available_models(api_config: APIConfig) -> list[str]:
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
-            if api_config.provider_id == "openrouter":
-                return [m["id"] for m in data.get("data", [])]
-            elif api_config.provider_id == "openai":
+            if api_config.provider_id in ("openrouter", "openai", "gemini"):
                 return [m["id"] for m in data.get("data", [])]
             elif api_config.provider_id == "ollama":
                 return [m["name"] for m in data.get("models", [])]
@@ -155,6 +160,12 @@ def get_default_models(provider_id: str) -> list[str]:
             "gpt-4o",
             "gpt-4.1-mini",
         ],
+        "gemini": [
+            "gemini-2.0-flash",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-2.0-flash-lite",
+        ],
         "ollama": [
             "llava",
             "llava:13b",
@@ -174,7 +185,7 @@ def get_suitable_cast_models(api_config: APIConfig) -> list[str]:
     all_models = fetch_available_models(api_config)
     # 过滤视觉模型
     keywords = ["vision", "vl", "vlm", "mini", "flash",
-                "llava", "moondream", "4o"]
+                "llava", "moondream", "4o", "gemini"]
     suitable = [m for m in all_models
                 if any(kw in m.lower() for kw in keywords)]
     return suitable if suitable else all_models

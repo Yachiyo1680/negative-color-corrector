@@ -42,6 +42,7 @@ class CorrectionResult:
     iterations: int             # AI反馈迭代次数
     final_cast: CastResult      # 最终偏色检测结果
     warm_style: str             # 使用的暖调风格
+    detector_warning: str = ""  # 检测器回退警告（非空表示降级）
 
 
 class Engine:
@@ -50,11 +51,12 @@ class Engine:
     def __init__(self, config: CorrectionConfig = None):
         self.config = config or CorrectionConfig()
         self.detector: Optional[CastDetector] = None
+        self._detector_warning: str = ""
 
     def _get_detector(self) -> CastDetector:
         """延迟初始化偏色检测器"""
         if self.detector is None:
-            self.detector = DetectorFactory.create({
+            self.detector, self._detector_warning = DetectorFactory.create({
                 "detector_mode": self.config.detector_mode,
                 "vlm_api_key": self.config.vlm_api_key,
                 "vlm_api_base": self.config.vlm_api_base,
@@ -83,7 +85,15 @@ class Engine:
             print("[Engine] 正片模式，跳过反相")
 
         # ── Step 2: 色罩分析 ──
-        mask_info = analyze_mask(img)
+        vlm_cfg = None
+        if self.config.vlm_api_key:
+            vlm_cfg = {
+                "api_base": self.config.vlm_api_base,
+                "api_key": self.config.vlm_api_key,
+                "model": self.config.vlm_model,
+                "timeout": 30,
+            }
+        mask_info = analyze_mask(img, vlm_config=vlm_cfg)
         print(f"[Engine] 色罩分析: {mask_info}")
 
         # ── Step 3: 通道补偿 ──
@@ -109,13 +119,20 @@ class Engine:
         # 启发式检测器可以迭代微调，VLM 只做单次判断
         is_heuristic = detector.name() == "heuristic"
 
-        if is_heuristic:
-            # 启发式：迭代反馈
-            img_out, final_cast, iters = self._heuristic_feedback(detector, img_out)
-        else:
-            # VLM/ONNX：单次修正（防模型发散）
-            img_out, final_cast = self._vlm_single_shot(detector, img_out)
-            iters = 1
+        try:
+            if is_heuristic:
+                # 启发式：迭代反馈
+                img_out, final_cast, iters = self._heuristic_feedback(detector, img_out)
+            else:
+                # VLM/ONNX：单次修正（防模型发散）
+                img_out, final_cast = self._vlm_single_shot(detector, img_out)
+                iters = 1
+        except RuntimeError as e:
+            # VLM API 调用失败——返回错误信息，不静默回退
+            raise RuntimeError(
+                f"偏色检测失败: {e}\n"
+                f"请检查 API Key、网络连接或模型名称是否正确"
+            ) from e
 
         return CorrectionResult(
             image=np.clip(img_out, 0, 255).astype(np.uint8),
@@ -123,6 +140,7 @@ class Engine:
             iterations=iters,
             final_cast=final_cast,
             warm_style=self.config.warmth_style,
+            detector_warning=self._detector_warning,
         )
 
     def _heuristic_feedback(self, detector: CastDetector,
@@ -184,10 +202,14 @@ class Engine:
 
         if cast.is_ok or cast.severity < self.config.cast_threshold:
             print(f"[Engine] VLM 偏色检测 OK (severity={cast.severity:.3f})")
+            if cast.detail:
+                print(f"[Engine] VLM detail: {cast.detail}")
             return img_out, cast
 
         print(f"[Engine] VLM 检测到 {cast.cast_type} (severity={cast.severity:.3f})，"
               f"一次性修正 {cast.severity*0.15:.1%}")
+        if cast.detail:
+            print(f"[Engine] VLM detail: {cast.detail}")
 
         # 单次调整，幅度 = severity × 15%
         img_out, _, _, _ = self._adjust_img(img_out, cast, damping=1.0, scale=0.15)

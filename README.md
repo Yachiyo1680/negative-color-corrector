@@ -318,8 +318,17 @@ python main.py scan.tiff -w natural
 # CLI 校色（正片 + Kodak Gold 暖调）
 python main.py scan.tiff --film-type positive --warmth kodak_gold
 
+# 文件夹批量校色
+python main.py ./scans/ -w none
+
+# 文件夹递归校色（含子文件夹）
+python main.py ./scans/ -r -w none
+
 # 使用 VLM 模型做偏色分析（需 OpenRouter API Key）
 python main.py scan.tiff -w none -d vlm_api --model "openai/gpt-4o-mini"
+
+# 使用 Gemini 偏色分析（需 Gemini API Key）
+python main.py scan.tiff -w none -d vlm_api --api-key YOUR_KEY --model gemini-2.0-flash --api-base https://generativelanguage.googleapis.com/v1beta/openai
 
 # Web UI（带 Gradio）
 pip install gradio
