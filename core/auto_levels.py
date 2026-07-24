@@ -12,17 +12,19 @@ from typing import Tuple
 def auto_levels(
     image: np.ndarray,
     percentile: float = 0.2,
+    max_val: float = 255.0,
 ) -> np.ndarray:
     """每通道独立拉伸直方图
 
     对各通道：
         lo = percentile(channel, p)
         hi = percentile(channel, 100 - p)
-        new = clamp((channel - lo) * 255 / (hi - lo), 0, 255)
+        new = clamp((channel - lo) * max_val / (hi - lo), 0, max_val)
 
     Args:
-        image: RGB 图像 (H, W, 3), float32 (0-255)
+        image: RGB 图像 (H, W, 3), float32
         percentile: 两侧裁剪百分位，默认 0.2%
+        max_val: 像素最大值（255.0 或 65535.0）
 
     Returns:
         色阶拉伸后的图像 (H, W, 3), float32
@@ -48,8 +50,8 @@ def auto_levels(
             hi = lo + 1
 
         # 拉伸
-        stretched = (channel - lo) * 255.0 / (hi - lo)
-        result[:, :, c] = np.clip(stretched, 0, 255)
+        stretched = (channel - lo) * max_val / (hi - lo)
+        result[:, :, c] = np.clip(stretched, 0, max_val)
 
     return result
 
@@ -57,6 +59,7 @@ def auto_levels(
 def auto_levels_combined(
     image: np.ndarray,
     percentile: float = 0.2,
+    max_val: float = 255.0,
 ) -> np.ndarray:
     """三通道统一拉伸（保留相对色彩关系）"""
     result = image.copy().astype(np.float32)
@@ -78,7 +81,7 @@ def auto_levels_combined(
         hi = lo + 1
 
     for c in range(3):
-        stretched = (result[:, :, c] - lo) * 255.0 / (hi - lo)
-        result[:, :, c] = np.clip(stretched, 0, 255)
+        stretched = (result[:, :, c] - lo) * max_val / (hi - lo)
+        result[:, :, c] = np.clip(stretched, 0, max_val)
 
     return result

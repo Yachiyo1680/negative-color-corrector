@@ -28,13 +28,15 @@ def apply_warmth(
     image: np.ndarray,
     style: WarmthStyle = "natural",
     strength: float = 1.0,
+    max_val: float = 255.0,
 ) -> np.ndarray:
     """对校色后图像应用暖调调整
 
     Args:
-        image: RGB 图像 (H, W, 3), float32 (0-255)
+        image: RGB 图像 (H, W, 3), float32
         style: 暖调风格
         strength: 强度系数 0.0（无效果）~ 2.0，默认 1.0
+        max_val: 像素最大值（255.0 或 65535.0）
 
     Returns:
         暖调调整后图像
@@ -50,7 +52,7 @@ def apply_warmth(
     result[:, :, 1] *= (1.0 + dg * strength)  # G
     result[:, :, 2] *= (1.0 + db * strength)  # B
 
-    return np.clip(result, 0, 255)
+    return np.clip(result, 0, max_val)
 
 
 def get_warmth_presets() -> list[dict]:

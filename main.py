@@ -179,12 +179,33 @@ def _run_cli(args):
             if is_batch:
                 print(f"\n--- [{idx}/{total}] {os.path.basename(input_path)} ---")
 
-            # 加载图片
+            # 加载图片（保留原始位深）
             print(f"[NCC] 加载: {input_path}")
-            img_pil = Image.open(input_path)
-            if img_pil.mode != "RGB":
-                img_pil = img_pil.convert("RGB")
-            img = np.array(img_pil, dtype=np.float32)
+            ext = os.path.splitext(input_path)[1].lower()
+            img = None
+
+            # TIFF 优先用 tifffile（PIL 会把 16-bit 截断为 8-bit）
+            if ext in (".tif", ".tiff"):
+                try:
+                    import tifffile
+                    img = tifffile.imread(input_path)
+                    if img.ndim == 2:
+                        img = np.stack([img, img, img], axis=-1)
+                    elif img.shape[-1] == 4:
+                        img = img[:, :, :3]  # RGBA → RGB
+                except ImportError:
+                    pass
+
+            if img is None:
+                img_pil = Image.open(input_path)
+                if img_pil.mode != "RGB":
+                    img_pil = img_pil.convert("RGB")
+                img = np.array(img_pil)
+
+            print(f"[NCC] 原始 dtype={img.dtype}, range=[{img.min()}, {img.max()}]")
+            # uint16 保留原样传给引擎；uint8 转 float32
+            if img.dtype == np.uint8:
+                img = img.astype(np.float32)
 
             # 执行校色
             engine = Engine(config)
@@ -194,10 +215,21 @@ def _run_cli(args):
             if result.detector_warning:
                 print(f"[NCC] ⚠️ {result.detector_warning}")
 
-            # 保存
+            # 保存（保留原始位深）
             output_path = args.output or _default_output(input_path)
-            out_pil = Image.fromarray(np.clip(result.image, 0, 255).astype(np.uint8))
-            out_pil.save(output_path)
+            if result.bit_depth == 16:
+                try:
+                    import tifffile
+                    tifffile.imwrite(output_path, result.image)
+                except ImportError:
+                    # tifffile 不可用时 fallback 到 PIL（会截断为 8-bit）
+                    out_pil = Image.fromarray(
+                        (result.image / 257).astype(np.uint8) if result.image.max() > 255
+                        else result.image.astype(np.uint8))
+                    out_pil.save(output_path)
+            else:
+                out_pil = Image.fromarray(result.image)
+                out_pil.save(output_path)
 
             # 单图模式输出详细信息，批量模式只输出文件名
             if is_batch:

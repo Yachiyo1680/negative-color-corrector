@@ -10,24 +10,21 @@
 import numpy as np
 
 
-def invert(image: np.ndarray) -> np.ndarray:
+def invert(image: np.ndarray, max_val: float = 255.0) -> np.ndarray:
     """对 RGB 图像执行反相
 
     Args:
-        image: RGB 图像 (H, W, 3), uint8 (0-255) 或 float32 (0-255)
+        image: RGB 图像 (H, W, 3), float32
+        max_val: 像素最大值（255.0 或 65535.0）
 
     Returns:
-        反相后的图像，与输入类型相同
+        反相后的图像
     """
-    if image.dtype == np.uint8:
-        return (255 - image).astype(np.uint8)
-    else:
-        # float32 模式
-        return 255.0 - image
+    return max_val - image
 
 
-def invert_float(image: np.ndarray) -> np.ndarray:
+def invert_float(image: np.ndarray, max_val: float = 255.0) -> np.ndarray:
     """反相并保持 float 格式（用于链式处理）"""
-    if image.dtype == np.uint8:
+    if image.dtype != np.float32:
         image = image.astype(np.float32)
-    return 255.0 - image
+    return max_val - image
