@@ -123,26 +123,31 @@ class Engine:
                            max_val=max_val)
         print(f"[Engine] 暖调完成: {self.config.warmth_style}")
 
-        # ── Step 6: AI 偏色检测 + 修正 ──
-        detector = self._get_detector()
+        # ── Step 6: AI 偏色检测 + 修正（仅 -w none 以外时） ──
         img_out = img.copy()
 
-        # 启发式检测器可以迭代微调，VLM 只做单次判断
-        is_heuristic = detector.name() == "heuristic"
+        if self.config.warmth_style == "none":
+            # none 模式跳过偏色修正：暖调不叠，校色引擎已足够中性
+            print("[Engine] warm_style=none，跳过偏色检测")
+            final_cast = CastResult("ok", 0, 0, 1.0)
+            iters = 0
+        else:
+            detector = self._get_detector()
+            is_heuristic = detector.name() == "heuristic"
 
-        try:
-            if is_heuristic:
-                img_out, final_cast, iters = self._heuristic_feedback(
-                    detector, img_out, max_val)
-            else:
-                img_out, final_cast = self._vlm_single_shot(
-                    detector, img_out, max_val)
-                iters = 1
-        except RuntimeError as e:
-            raise RuntimeError(
-                f"偏色检测失败: {e}\n"
-                f"请检查 API Key、网络连接或模型名称是否正确"
-            ) from e
+            try:
+                if is_heuristic:
+                    img_out, final_cast, iters = self._heuristic_feedback(
+                        detector, img_out, max_val)
+                else:
+                    img_out, final_cast = self._vlm_single_shot(
+                        detector, img_out, max_val)
+                    iters = 1
+            except RuntimeError as e:
+                raise RuntimeError(
+                    f"偏色检测失败: {e}\n"
+                    f"请检查 API Key、网络连接或模型名称是否正确"
+                ) from e
 
         # 输出到原始位深
         if bit_depth == 16:
