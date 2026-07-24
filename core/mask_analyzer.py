@@ -148,7 +148,7 @@ def _vlm_correct_reference(image: np.ndarray, vlm_config: dict,
     把算法结果告诉 VLM，让 VLM 判断是否有更好的参考区域。
 
     Args:
-        image: 反相后的 RGB 图像 (H, W, 3), float32
+        image: 反相后的 RGB 图像 (H, W, 3), float32 (任意范围)
         vlm_config: {"api_base", "api_key", "model", "timeout"}
         algorithm_ref: 算法找到的参考点 RGB (3,)
 
@@ -156,6 +156,13 @@ def _vlm_correct_reference(image: np.ndarray, vlm_config: dict,
         MaskResult（VLM 确认或更优结果）或 None（VLM 失败时保留算法结果）
     """
     from .cast_detector import _encode_image, _call_vlm_api
+
+    # 检测原始范围，归一化到 0-255 给 VLM
+    img_max = float(image.max()) if image.max() > 0 else 255.0
+    if img_max > 255:
+        img_for_vlm = (image / img_max * 255).astype(np.float32)
+    else:
+        img_for_vlm = image.astype(np.float32)
 
     ref_rgb = algorithm_ref.tolist() if hasattr(algorithm_ref, 'tolist') else list(algorithm_ref)
     prompt = f"""Analyze this inverted film negative scan for neutral gray reference.
@@ -172,7 +179,7 @@ or
 {{"confirmed": false, "regions": [{{"description": "...", "rgb": [R, G, B]}}]}}"""
 
     try:
-        img_b64 = _encode_image(image)
+        img_b64 = _encode_image(img_for_vlm)
         response = _call_vlm_api(
             api_base=vlm_config.get("api_base", ""),
             api_key=vlm_config.get("api_key", ""),
@@ -196,6 +203,10 @@ or
             return None
 
         mean_rgb = np.mean(rgbs, axis=0).astype(float)
+        # VLM 返回 0-255 范围的 RGB，还原到原始范围
+        if img_max > 255:
+            mean_rgb = mean_rgb / 255.0 * img_max
+
         descs = [r.get("description", "") for r in regions]
         detail = (f"VLM校正中性灰: {', '.join(descs)} "
                   f"RGB=({mean_rgb[0]:.0f},{mean_rgb[1]:.0f},{mean_rgb[2]:.0f})")
@@ -212,13 +223,20 @@ def _vlm_find_neutral_gray(image: np.ndarray, vlm_config: dict) -> Optional[Mask
     """用 VLM 识别图中可能的中性灰区域，采样其 RGB 作为参考点
 
     Args:
-        image: 反相后的 RGB 图像 (H, W, 3), float32
+        image: 反相后的 RGB 图像 (H, W, 3), float32 (任意范围)
         vlm_config: {"api_base", "api_key", "model", "timeout"}
 
     Returns:
         MaskResult 或 None（VLM 失败/无结果时）
     """
     from .cast_detector import _encode_image, _call_vlm_api
+
+    # 检测原始范围，归一化到 0-255 给 VLM
+    img_max = float(image.max()) if image.max() > 0 else 255.0
+    if img_max > 255:
+        img_for_vlm = (image / img_max * 255).astype(np.float32)
+    else:
+        img_for_vlm = image.astype(np.float32)
 
     prompt = """Analyze this inverted film negative scan for neutral gray reference points.
 Find regions that are likely neutral gray in the ORIGINAL scene (before inversion):
@@ -228,11 +246,11 @@ Find regions that are likely neutral gray in the ORIGINAL scene (before inversio
 Respond in JSON only:
 {"regions": [{"description": "...", "rgb": [R, G, B]}]}
 
-rgb values should be the MEAN color of that region in THIS inverted image.
+rgb values should be the MEAN color of that region in THIS inverted image (0-255 range).
 Return 1-3 regions. If no neutral gray found, return {"regions": []}."""
 
     try:
-        img_b64 = _encode_image(image)
+        img_b64 = _encode_image(img_for_vlm)
         response = _call_vlm_api(
             api_base=vlm_config.get("api_base", ""),
             api_key=vlm_config.get("api_key", ""),
@@ -254,6 +272,10 @@ Return 1-3 regions. If no neutral gray found, return {"regions": []}."""
             return None
 
         mean_rgb = np.mean(rgbs, axis=0).astype(float)
+        # VLM 返回 0-255 范围的 RGB，还原到原始范围
+        if img_max > 255:
+            mean_rgb = mean_rgb / 255.0 * img_max
+
         descs = [r.get("description", "") for r in regions]
         detail = f"VLM中性灰: {', '.join(descs)} RGB=({mean_rgb[0]:.0f},{mean_rgb[1]:.0f},{mean_rgb[2]:.0f})"
 

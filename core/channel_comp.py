@@ -15,17 +15,16 @@ from .mask_analyzer import MaskResult
 def apply_channel_compensation(
     image: np.ndarray,
     mask: MaskResult,
+    max_val: float = 255.0,
 ) -> np.ndarray:
     """对反相后的图像应用通道补偿
 
-    每个像素的 RGB 值乘以对应通道的补偿比例：
-        result_R = clamp(input_R * scale_r, 0, 255)
-        result_G = clamp(input_G * scale_g, 0, 255)
-        result_B = clamp(input_B * scale_b, 0, 255)
+    每个像素的 RGB 值乘以对应通道的补偿比例。
 
     Args:
-        image: 反相后的 RGB 图像 (H, W, 3), float32 (0-255)
+        image: 反相后的 RGB 图像 (H, W, 3), float32
         mask: 色罩分析结果（含 scale_r, scale_g, scale_b）
+        max_val: 像素最大值（255.0 或 65535.0）
 
     Returns:
         通道补偿后的图像 (H, W, 3), float32
@@ -36,8 +35,7 @@ def apply_channel_compensation(
     result[:, :, 1] *= mask.scale_g  # G channel
     result[:, :, 2] *= mask.scale_b  # B channel
 
-    # 钳位到 [0, 255]
-    return np.clip(result, 0, 255)
+    return np.clip(result, 0, max_val)
 
 
 def manual_compensation(
@@ -45,6 +43,7 @@ def manual_compensation(
     scale_r: float,
     scale_g: float,
     scale_b: float,
+    max_val: float = 255.0,
 ) -> np.ndarray:
     """手动指定补偿比例的通道补偿
 
@@ -53,6 +52,7 @@ def manual_compensation(
     Args:
         image: 图像 (H, W, 3), float32
         scale_r, scale_g, scale_b: 各通道补偿系数
+        max_val: 像素最大值（255.0 或 65535.0）
 
     Returns:
         补偿后图像
@@ -61,4 +61,4 @@ def manual_compensation(
     result[:, :, 0] *= scale_r
     result[:, :, 1] *= scale_g
     result[:, :, 2] *= scale_b
-    return np.clip(result, 0, 255)
+    return np.clip(result, 0, max_val)

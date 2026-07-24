@@ -43,6 +43,7 @@ class CorrectionResult:
     final_cast: CastResult      # 最终偏色检测结果
     warm_style: str             # 使用的暖调风格
     detector_warning: str = ""  # 检测器回退警告（非空表示降级）
+    bit_depth: int = 8          # 输出位深（8 或 16）
 
 
 class Engine:
@@ -69,17 +70,25 @@ class Engine:
         执行完整校色流程。
 
         参数:
-            image: RGB 图像 (H, W, 3), uint8 0-255
+            image: RGB 图像 (H, W, 3), uint8 0-255 或 uint16 0-65535
 
         返回:
             CorrectionResult
         """
-        img = image.copy().astype(np.float32)
+        # 检测输入位深，保持在原始范围处理
+        if image.dtype == np.uint16 or (image.dtype == np.float32 and image.max() > 255):
+            max_val = 65535.0
+            bit_depth = 16
+        else:
+            max_val = 255.0
+            bit_depth = 8
+
+        img = image.astype(np.float32)
         h, w = img.shape[:2]
 
         # ── Step 1: 反相（仅负片） ──
         if self.config.film_type == "negative":
-            img = invert(img)
+            img = invert(img, max_val=max_val)
             print("[Engine] 反相完成")
         else:
             print("[Engine] 正片模式，跳过反相")
@@ -97,19 +106,21 @@ class Engine:
         print(f"[Engine] 色罩分析: {mask_info}")
 
         # ── Step 3: 通道补偿 ──
-        img = apply_channel_compensation(img, mask_info)
+        img = apply_channel_compensation(img, mask_info, max_val=max_val)
         print(f"[Engine] 通道补偿完成: "
               f"R×{mask_info.scale_r:.3f} "
               f"G×{mask_info.scale_g:.3f} "
               f"B×{mask_info.scale_b:.3f}")
 
         # ── Step 4: 智能色阶 ──
-        img = auto_levels(img, percentile=self.config.levels_percentile)
+        img = auto_levels(img, percentile=self.config.levels_percentile,
+                          max_val=max_val)
         print("[Engine] 智能色阶完成")
 
         # ── Step 5: 暖调控制 ──
         img = apply_warmth(img, style=self.config.warmth_style,
-                           strength=self.config.warmth_strength)
+                           strength=self.config.warmth_strength,
+                           max_val=max_val)
         print(f"[Engine] 暖调完成: {self.config.warmth_style}")
 
         # ── Step 6: AI 偏色检测 + 修正 ──
@@ -121,42 +132,46 @@ class Engine:
 
         try:
             if is_heuristic:
-                # 启发式：迭代反馈
-                img_out, final_cast, iters = self._heuristic_feedback(detector, img_out)
+                img_out, final_cast, iters = self._heuristic_feedback(
+                    detector, img_out, max_val)
             else:
-                # VLM/ONNX：单次修正（防模型发散）
-                img_out, final_cast = self._vlm_single_shot(detector, img_out)
+                img_out, final_cast = self._vlm_single_shot(
+                    detector, img_out, max_val)
                 iters = 1
         except RuntimeError as e:
-            # VLM API 调用失败——返回错误信息，不静默回退
             raise RuntimeError(
                 f"偏色检测失败: {e}\n"
                 f"请检查 API Key、网络连接或模型名称是否正确"
             ) from e
 
+        # 输出到原始位深
+        if bit_depth == 16:
+            output = np.clip(img_out, 0, 65535).astype(np.uint16)
+        else:
+            output = np.clip(img_out, 0, 255).astype(np.uint8)
+
         return CorrectionResult(
-            image=np.clip(img_out, 0, 255).astype(np.uint8),
+            image=output,
             mask_info=mask_info,
             iterations=iters,
             final_cast=final_cast,
             warm_style=self.config.warmth_style,
             detector_warning=self._detector_warning,
+            bit_depth=bit_depth,
         )
 
     def _heuristic_feedback(self, detector: CastDetector,
-                            img_out: np.ndarray):
-        """启发式检测器的迭代反馈
-
-        Returns:
-            (修改后的图像, final_cast, 迭代次数)
-        """
+                            img_out: np.ndarray, max_val: float = 255.0):
+        """启发式检测器的迭代反馈"""
         final_cast = CastResult("ok", 0, 0, 1.0)
         accum_r, accum_g, accum_b = 1.0, 1.0, 1.0
         prev_cast = ""
         iters = 0
 
         for i in range(self.config.max_iterations):
-            cast = detector.detect(img_out.astype(np.uint8))
+            # 检测器需要 0-255 输入
+            detect_input = np.clip(img_out / max_val * 255, 0, 255).astype(np.uint8)
+            cast = detector.detect(detect_input)
             iters = i + 1
 
             if cast.is_ok or cast.severity < self.config.cast_threshold:
@@ -164,7 +179,6 @@ class Engine:
                 final_cast = cast
                 break
 
-            # 方向翻转检测
             direction_pairs = {
                 "warm": ["cool", "blue"],
                 "cool": ["warm", "yellow"],
@@ -180,8 +194,7 @@ class Engine:
 
             damping = max(0.97 ** i, 0.3)
             img_out, adj_r, adj_g, adj_b = self._adjust_img(
-                img_out, cast, damping
-            )
+                img_out, cast, damping, max_val=max_val)
             accum_r *= adj_r
             accum_g *= adj_g
             accum_b *= adj_b
@@ -192,13 +205,11 @@ class Engine:
         return img_out, final_cast, iters
 
     def _vlm_single_shot(self, detector: CastDetector,
-                         img_out: np.ndarray):
-        """VLM 单次修正——检测偏色，做一次调整，完毕
-
-        Returns:
-            (修改后的图像, final_cast)
-        """
-        cast = detector.detect(img_out.astype(np.uint8))
+                         img_out: np.ndarray, max_val: float = 255.0):
+        """VLM 单次修正"""
+        # 检测器需要 0-255 输入
+        detect_input = np.clip(img_out / max_val * 255, 0, 255).astype(np.uint8)
+        cast = detector.detect(detect_input)
 
         if cast.is_ok or cast.severity < self.config.cast_threshold:
             print(f"[Engine] VLM 偏色检测 OK (severity={cast.severity:.3f})")
@@ -211,8 +222,8 @@ class Engine:
         if cast.detail:
             print(f"[Engine] VLM detail: {cast.detail}")
 
-        # 单次调整，幅度 = severity × 15%
-        img_out, _, _, _ = self._adjust_img(img_out, cast, damping=1.0, scale=0.15)
+        img_out, _, _, _ = self._adjust_img(img_out, cast, damping=1.0,
+                                            scale=0.15, max_val=max_val)
 
         return img_out, CastResult(
             cast_type=cast.cast_type,
@@ -225,18 +236,9 @@ class Engine:
     def _adjust_img(self, img: np.ndarray,
                     cast: CastResult,
                     damping: float = 1.0,
-                    scale: float = 0.04) -> tuple:
-        """根据偏色检测结果微调通道比例
-
-        Args:
-            img: 输入图像
-            cast: 偏色检测结果
-            damping: 阻尼系数
-            scale: 基础调整幅度（默认 4%）
-
-        Returns:
-            (调整后图像, R调整系数, G调整系数, B调整系数)
-        """
+                    scale: float = 0.04,
+                    max_val: float = 255.0) -> tuple:
+        """根据偏色检测结果微调通道比例"""
         result = img.copy().astype(np.float32)
         magnitude = 1.0 + cast.severity * scale * damping
 
@@ -255,4 +257,4 @@ class Engine:
         result[:,:,1] *= adj_g
         result[:,:,2] *= adj_b
 
-        return result, adj_r, adj_g, adj_b
+        return np.clip(result, 0, max_val), adj_r, adj_g, adj_b
