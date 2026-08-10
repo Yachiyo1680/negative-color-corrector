@@ -218,6 +218,7 @@ def _run_cli(args):
             img = None
 
             # TIFF 优先用 tifffile（PIL 会把 16-bit 截断为 8-bit）
+            tifffile_missing = False
             if ext in (".tif", ".tiff"):
                 try:
                     import tifffile
@@ -227,9 +228,13 @@ def _run_cli(args):
                     elif img.shape[-1] == 4:
                         img = img[:, :, :3]  # RGBA → RGB
                 except ImportError:
+                    tifffile_missing = True
                     pass
 
             if img is None:
+                if tifffile_missing:
+                    print("[NCC] ⚠️ 未安装 tifffile，16-bit TIFF 将被 PIL 截断为 8-bit！")
+                    print("[NCC]    请安装: pip install tifffile")
                 img_pil = Image.open(input_path)
                 if img_pil.mode != "RGB":
                     img_pil = img_pil.convert("RGB")

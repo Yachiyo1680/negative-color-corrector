@@ -5,6 +5,9 @@ numpy>=1.24
 Pillow>=10.0
 requests>=2.28
 
+# 16-bit TIFF 读写（PIL 会截断 16-bit 为 8-bit）
+tifffile>=2023.7.10
+
 # 安全存储（可选）
 # keyring>=24.0       # 系统钥匙串
 # cryptography>=41.0  # 加密文件
