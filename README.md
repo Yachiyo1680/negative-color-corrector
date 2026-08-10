@@ -327,6 +327,17 @@ python main.py ./scans/ -r -w none
 # 使用 VLM 模型做偏色分析（需 OpenRouter API Key）
 python main.py scan.tiff -w none -d vlm_api --model "openai/gpt-4o-mini"
 
+# 指定 Provider 做偏色分析（Key/API地址/默认模型自动从该 Provider 读取）
+python main.py scan.tiff -w none -d vlm_api --provider openrouter
+python main.py scan.tiff -w none -d vlm_api --provider gemini
+python main.py scan.tiff -w none -d vlm_api --provider openai
+
+# 本地 Ollama（无需 API Key）
+python main.py scan.tiff -w none -d vlm_api --provider ollama --model llava
+
+# 自定义 OpenAI 兼容接口（配合 config.json5 的 custom_api_base）
+python main.py scan.tiff -w none -d vlm_api --provider custom --model my-model
+
 # 使用 Gemini 偏色分析（需 Gemini API Key）
 python main.py scan.tiff -w none -d vlm_api --api-key YOUR_KEY --model gemini-2.0-flash --api-base https://generativelanguage.googleapis.com/v1beta/openai
 

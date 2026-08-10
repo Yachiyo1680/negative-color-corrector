@@ -28,6 +28,7 @@ DEFAULT_CONFIG_PATH = os.path.join(DEFAULT_CONFIG_DIR, "config.json5")
 class DetectorConfig:
     """偏色检测器配置"""
     mode: str = "auto"           # auto | heuristic | onnx | vlm_api
+    provider: str = "auto"       # auto | openrouter | openai | gemini | custom | ollama
     model: str = "openai/gpt-4o-mini"
     api_base: str = ""           # 自定义 API 地址
     timeout: int = 30
@@ -214,6 +215,10 @@ DEFAULT_CONFIG_CONTENT = """// ~/.negative-corrector/config.json5
   detector: {
     // 可选: "auto" | "heuristic" | "onnx" | "vlm_api"
     mode: "auto",
+
+    // API Provider: "auto"(按Key优先级) | "openrouter" | "openai" | "gemini" | "custom" | "ollama"
+    // 显式指定后，由该 Provider 决定 API Key、地址和默认模型
+    provider: "auto",
 
     // VL 模型名（detector.mode = "vlm_api" 时使用）
     model: "openai/gpt-4o-mini",
@@ -431,6 +436,7 @@ class ConfigManager:
             ),
             detector=DetectorConfig(
                 mode=str(detector_data.get("mode", "auto")),
+                provider=str(detector_data.get("provider", "auto")),
                 model=str(detector_data.get("model", "openai/gpt-4o-mini")),
                 api_base=str(detector_data.get("api_base", "")),
                 timeout=int(detector_data.get("timeout", 30)),

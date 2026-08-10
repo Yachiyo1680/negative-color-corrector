@@ -46,6 +46,11 @@ def main():
     parser.add_argument("-d", "--detector", default="auto",
                         choices=["auto", "heuristic", "vlm_api"],
                         help="偏色检测后端")
+    parser.add_argument("--provider", default="auto",
+                        choices=["auto", "openrouter", "openai",
+                                 "gemini", "custom", "ollama"],
+                        help="API Provider: auto=自动选择(默认); "
+                             "显式指定后由该 Provider 决定 API Key、地址和默认模型")
     parser.add_argument("--api-key", default="",
                         help="VL 模型 API Key")
     parser.add_argument("--api-base", default="",
@@ -133,21 +138,49 @@ def _run_cli(args):
     warmth_strength = args.strength if args.strength != 1.0 else cfg.correction.warmth_strength
     levels_percentile = args.percentile if args.percentile != 0.2 else cfg.correction.levels_percentile
     detector_mode = args.detector if args.detector != "auto" else cfg.detector.mode
-    api_key = (args.api_key
-               or cfg_mgr.get_api_key("openrouter")
-               or cfg_mgr.get_api_key("openai")
-               or cfg_mgr.get_api_key("gemini")
-               or cfg_mgr.get_api_key("custom"))
+    # ── Provider 解析: CLI --provider > 配置文件 detector.provider > auto ──
+    from core.model_provider import PROVIDERS
+    provider_id = args.provider
+    if provider_id == "auto":
+        provider_id = getattr(cfg.detector, "provider", "auto") or "auto"
+    if provider_id not in PROVIDERS:
+        provider_id = "auto"
+
     model = args.model if args.model != "openai/gpt-4o-mini" else cfg.detector.model
-    # api_base: 用户指定 > 配置文件 > 根据模型名自动推断
-    api_base = args.api_base or cfg.detector.api_base
-    if not api_base and api_key:
-        from core.model_provider import PROVIDERS
-        model_lower = model.lower()
-        if "gemini" in model_lower:
-            api_base = PROVIDERS["gemini"].base_url
-        elif "gpt" in model_lower:
-            api_base = PROVIDERS["openai"].base_url
+    model_is_default = (args.model == "openai/gpt-4o-mini"
+                        and cfg.detector.model == "openai/gpt-4o-mini")
+
+    if provider_id == "auto":
+        # 自动模式: Key 优先级 openrouter > openai > gemini > custom
+        api_key = (args.api_key
+                   or cfg_mgr.get_api_key("openrouter")
+                   or cfg_mgr.get_api_key("openai")
+                   or cfg_mgr.get_api_key("gemini")
+                   or cfg_mgr.get_api_key("custom"))
+        # api_base: 用户指定 > 配置文件 > 根据模型名自动推断
+        api_base = args.api_base or cfg.detector.api_base
+        if not api_base and api_key:
+            model_lower = model.lower()
+            if "/" in model:
+                # OpenRouter 风格模型名 (provider/model)，默认走 OpenRouter
+                api_base = PROVIDERS["openrouter"].base_url
+            elif "gemini" in model_lower:
+                api_base = PROVIDERS["gemini"].base_url
+            else:
+                api_base = PROVIDERS["openai"].base_url
+    else:
+        # 显式 Provider: Key / API 地址 / 默认模型都由它决定
+        provider = PROVIDERS[provider_id]
+        api_key = args.api_key or cfg_mgr.get_api_key(provider_id)
+        if provider_id == "custom":
+            api_base = (args.api_base or cfg.detector.api_base
+                        or cfg.providers.custom_api_base)
+        else:
+            api_base = (args.api_base or cfg.detector.api_base
+                        or provider.base_url)
+        # 用户没有自定义模型时，使用该 Provider 的默认模型
+        if model_is_default and provider.default_model:
+            model = provider.default_model
     max_iter = args.max_iter if args.max_iter != 10 else cfg.detector.max_iterations
     threshold = args.threshold if args.threshold != 0.15 else cfg.detector.cast_threshold
 
