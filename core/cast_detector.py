@@ -449,6 +449,17 @@ def _call_vlm_api(
         headers["HTTP-Referer"] = "https://github.com/Yachiyo1680/negative-color-corrector"
         headers["X-Title"] = "Negative Color Corrector"
 
+    # 推理模型（reasoning model）会先输出大段思考再给答案，
+    # 固定 256 个 token 会被思考过程耗尽，导致 content 为空。
+    # max_tokens 只是上限，普通模型不会因此多计费。
+    reasoning_keywords = ("luna", "terra", "sol", "thinking",
+                          "reason", "o1", "o3", "o4", "r1",
+                          "deepseek-r", "qwen3")
+    if any(k in model.lower() for k in reasoning_keywords):
+        max_tokens = 8192
+    else:
+        max_tokens = 4096
+
     # 构建请求体
     payload = {
         "model": model,
@@ -466,7 +477,7 @@ def _call_vlm_api(
                 ],
             }
         ],
-        "max_tokens": 256,
+        "max_tokens": max_tokens,
         "temperature": 0.1,
         "response_format": {"type": "json_object"},
     }
@@ -497,6 +508,12 @@ def _call_vlm_api(
     # 提取响应文本
     content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
     if not content:
+        msg = data.get("choices", [{}])[0].get("message", {})
+        if msg.get("reasoning"):
+            raise ValueError(
+                "API 响应为空（模型推理 token 耗尽）——"
+                "当前模型是推理模型，需增大 max_tokens"
+            )
         raise ValueError("API 响应为空")
 
     # 尝试提取 JSON（模型可能返回 markdown 包裹的 JSON）
