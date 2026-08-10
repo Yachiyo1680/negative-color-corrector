@@ -217,9 +217,9 @@ def _run_cli(args):
             ext = os.path.splitext(input_path)[1].lower()
             img = None
 
-            # TIFF 优先用 tifffile（PIL 会把 16-bit 截断为 8-bit）
+            # TIFF/PNG 优先用 tifffile（PIL 会把 16-bit 截断为 8-bit）
             tifffile_missing = False
-            if ext in (".tif", ".tiff"):
+            if ext in (".tif", ".tiff", ".png"):
                 try:
                     import tifffile
                     img = tifffile.imread(input_path)
@@ -230,6 +230,8 @@ def _run_cli(args):
                 except ImportError:
                     tifffile_missing = True
                     pass
+                except Exception:
+                    img = None  # tifffile 读不了（如异常编码），回退 PIL
 
             if img is None:
                 if tifffile_missing:
