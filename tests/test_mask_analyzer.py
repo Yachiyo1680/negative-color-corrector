@@ -164,6 +164,33 @@ class MaskAnalyzerTests(unittest.TestCase):
             [1088.8889, 1177.7778, 1266.6666],
         )
 
+    def test_vlm_receives_algorithmically_precorrected_preview(self):
+        image = np.full((40, 40, 3), 40000.0, dtype=np.float32)
+        captured = {}
+
+        def fake_encode(preview):
+            captured["preview"] = preview.copy()
+            return "encoded"
+
+        with patch("core.cast_detector._encode_image", side_effect=fake_encode), \
+             patch(
+                 "core.cast_detector._call_vlm_api",
+                 return_value=json.dumps({"regions": []}),
+             ):
+            result = mask_analyzer._vlm_find_neutral_gray(image, {
+                "api_base": "https://example.invalid/v1",
+                "api_key": "test-key",
+                "model": "test-model",
+                "timeout": 1,
+                "levels_percentile": 0.2,
+            })
+
+        self.assertIsNone(result)
+        preview = captured["preview"]
+        self.assertEqual(preview.dtype, np.uint8)
+        self.assertEqual(preview.shape, image.shape)
+        self.assertFalse(np.array_equal(preview, image.astype(np.uint8)))
+
     def test_analyze_mask_falls_back_to_edge_after_vlm_failure(self):
         image = np.full((40, 40, 3), 40000.0, dtype=np.float32)
 

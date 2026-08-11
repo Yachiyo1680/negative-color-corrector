@@ -101,6 +101,7 @@ class Engine:
                 "api_key": self.config.vlm_api_key,
                 "model": self.config.vlm_model,
                 "timeout": 30,
+                "levels_percentile": self.config.levels_percentile,
             }
         mask_info = analyze_mask(img, vlm_config=vlm_cfg)
         print(f"[Engine] 色罩分析: {mask_info}")

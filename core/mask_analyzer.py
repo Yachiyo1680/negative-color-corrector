@@ -36,7 +36,7 @@ def analyze_mask(image: np.ndarray, vlm_config: Optional[dict] = None) -> MaskRe
     """
     _h, _w = image.shape[:2]
 
-    # ── 策略 A: VLM 直接定位中性灰（首选） ──
+    # ── 策略 A: 算法预校色 → VLM 定位中性灰 ──
     if vlm_config and vlm_config.get("api_key"):
         vlm_result = _vlm_find_neutral_gray(image, vlm_config)
         if vlm_result is not None:
@@ -124,10 +124,7 @@ def _vlm_find_neutral_gray(image: np.ndarray, vlm_config: dict) -> Optional[Mask
     from .cast_detector import _encode_image
 
     img_max = float(image.max()) if image.max() > 0 else 255.0
-    if img_max > 255:
-        img_for_vlm = (image / img_max * 255).astype(np.float32)
-    else:
-        img_for_vlm = image.astype(np.float32)
+    img_for_vlm = _prepare_vlm_preview(image, vlm_config)
 
     prompt = """Analyze this already-inverted color-negative scan.
 
@@ -146,9 +143,11 @@ Do not use:
 - strong shadows, specular highlights, overexposed white areas
 - narrow edges or areas contaminated by adjacent colors
 
-The supplied image has already been inverted from a color negative.
-Identify neutral materials in the depicted positive scene, but report RGB
-values measured in THIS supplied inverted image. Return a normalized center
+The supplied image has already been inverted from a color negative and has
+been preliminarily white-balanced and normalized by an algorithm for viewing.
+Use this preview only to identify materials and locations. The program will
+sample the final RGB reference from the original-resolution inverted image.
+Return a normalized center
 coordinate [x, y] for each region (0.0-1.0, left-to-right/top-to-bottom).
 The program will sample at least a 3x3 neighborhood around each center from
 the original-resolution image, so do not use a boundary, highlight, or tiny
@@ -248,6 +247,33 @@ def _restore_vlm_rgb(rgb: np.ndarray, image_max: float) -> np.ndarray:
     if image_max > 255 and np.max(values) <= 255:
         return values / 255.0 * image_max
     return np.clip(values, 0, image_max)
+
+
+def _prepare_vlm_preview(image: np.ndarray, vlm_config: dict) -> np.ndarray:
+    """用非 VLM 算法预校色，生成供 VLM 识别位置的 0-255 预览图。"""
+    max_val = 65535.0 if float(np.max(image)) > 255.0 else 255.0
+    algorithm_mask = _find_edge_reference(image)
+    if algorithm_mask is None:
+        global_mean = np.mean(image, axis=(0, 1))
+        algorithm_result = _compute_from_ref(
+            image, global_mean, method="global", confidence=0.5,
+        )
+    else:
+        _side, edge_mean = algorithm_mask
+        algorithm_result = _compute_from_ref(
+            image, edge_mean, method="edge", confidence=0.95,
+        )
+
+    from .channel_comp import apply_channel_compensation
+    from .auto_levels import auto_levels
+
+    preview = apply_channel_compensation(image, algorithm_result, max_val=max_val)
+    preview = auto_levels(
+        preview,
+        percentile=vlm_config.get("levels_percentile", 0.2),
+        max_val=max_val,
+    )
+    return np.clip(preview / max_val * 255.0, 0, 255).astype(np.uint8)
 
 
 def _sample_neighborhood(
