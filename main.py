@@ -97,6 +97,19 @@ def main():
     _run_cli(args)
 
 
+def _probe_tiff_bits(path: str) -> int:
+    """读取 TIFF 位深元数据（仅 metadata，不依赖 imagecodecs codec）。
+
+    返回 bit depth；未知时返回 0。
+    """
+    try:
+        import tifffile
+        with tifffile.TiffFile(path) as tf:
+            return int(tf.pages[0].bitspersample)
+    except Exception:
+        return 0  # 未知
+
+
 def _expand_inputs(inputs: list[str], recursive: bool) -> list[str]:
     """将输入路径中的文件夹展开为图片文件列表"""
     result = []
@@ -230,8 +243,16 @@ def _run_cli(args):
                 except ImportError:
                     tifffile_missing = True
                     pass
-                except Exception:
-                    img = None  # tifffile 读不了（如异常编码），回退 PIL
+                except Exception as e:
+                    # 16-bit TIFF 缺 codec（常见：未装 imagecodecs 解 LZW/Deflate）时，
+                    # 静默回退 PIL 会把 16-bit 降成 8-bit。宁可跳过也不产出位深错误的结果。
+                    if ext in (".tif", ".tiff") and _probe_tiff_bits(input_path) == 16:
+                        print(f"[NCC] ❌ 无法无损读取 16-bit TIFF: {os.path.basename(input_path)}")
+                        print(f"[NCC]    原因: {e}")
+                        print(f"[NCC]    LZW/Deflate 压缩的 16-bit TIFF 需要 imagecodecs 才能保留位深。")
+                        print(f"[NCC]    请执行: pip install imagecodecs   否则该图会被降为 8-bit。")
+                        continue
+                    img = None  # 8-bit 源或可安全降级，回退 PIL
 
             if img is None:
                 if tifffile_missing:

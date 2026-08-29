@@ -184,10 +184,16 @@ neutral reference exists."""
             center = region.get("center")
             if not isinstance(center, list) or len(center) != 2:
                 continue
-            sample = _sample_neighborhood(image, center)
-            if sample is not None:
+            sample_res = _sample_neighborhood_adaptive(
+                image, center,
+                side_min=vlm_config.get("sample_side_min", 3),
+                side_max=vlm_config.get("sample_side_max", 11),
+            )
+            if sample_res is not None:
+                sample, chosen_r = sample_res
                 samples.append(sample)
                 valid_regions.append(region)
+                print(f"[MaskAnalyzer] VLM中性灰窗口 radius={chosen_r} (side={2*chosen_r+1})")
 
         if not samples:
             print("[MaskAnalyzer] VLM 中性灰检测返回的区域缺少有效中心坐标")
@@ -299,3 +305,75 @@ def _sample_neighborhood(
     x0, x1 = max(0, x - radius), min(w, x + radius + 1)
     y0, y1 = max(0, y - radius), min(h, y + radius + 1)
     return np.mean(image[y0:y1, x0:x1, :], axis=(0, 1))
+
+
+def _sample_neighborhood_adaptive(
+    image: np.ndarray,
+    center: list,
+    side_min: int = 3,
+    side_max: int = 11,
+    block: int = 2,
+) -> Optional[tuple[np.ndarray, int]]:
+    """自适应采样：窗口边长限制在 [side_min, side_max]（只取奇数边长），
+    在该范围内取"总误差(噪声+偏置)最小"的窗口均值。
+
+    噪声项  rel_se  = sqrt(2) * σ / mean_ref / side   （σ 为固定子块内 std，代表每像素噪声）
+    偏置项  bias    = 跨块每通道均值相对离散度的三通道平均 （代表窗口内低频非均匀，防单通道近 0 爆炸）
+    总误差  tot     = sqrt(rel_se² + bias²)
+
+    返回 (ref_rgb, 选中的半径 r)；全部候选越界时返回 None。
+    """
+    if len(center) != 2:
+        return None
+    try:
+        x_norm, y_norm = float(center[0]), float(center[1])
+    except (TypeError, ValueError):
+        return None
+    if not (0.0 <= x_norm <= 1.0 and 0.0 <= y_norm <= 1.0):
+        return None
+
+    h, w = image.shape[:2]
+    cx = min(w - 1, max(0, int(round(x_norm * (w - 1)))))
+    cy = min(h - 1, max(0, int(round(y_norm * (h - 1)))))
+
+    best_tot: Optional[float] = None
+    best_r: Optional[int] = None
+    best_mean: Optional[np.ndarray] = None
+
+    for side in range(side_min, side_max + 1, 2):  # 奇数边长
+        r = (side - 1) // 2
+        x0, x1 = cx - r, cx + r + 1
+        y0, y1 = cy - r, cy + r + 1
+        if x0 < 0 or y0 < 0 or x1 > w or y1 > h:
+            continue  # 靠近边界，该边长不可用
+        window = image[y0:y1, x0:x1, :]
+        mean_rgb = window.mean(axis=(0, 1))
+
+        # ── 噪声/偏置估计：小窗口(切不出多块)用整窗 std，偏置可忽略 ──
+        nh, nw = side // block, side // block
+        if nh < 2 or nw < 2:
+            sigma = float(window.std())
+            bias = 0.0
+        else:
+            blks = window[:nh * block, :nw * block, :].reshape(
+                nh, block, nw, block, 3)
+            std_blocks = blks.std(axis=(1, 3))          # (nh, nw)
+            sigma = float(std_blocks.mean())
+            mean_blocks = blks.mean(axis=(1, 3)).reshape(-1, 3)  # (nh*nw, 3)
+            ch_ref = mean_blocks.mean(axis=0)
+            chan_rel = [
+                float(np.std(mean_blocks[:, c])) / (abs(ch_ref[c]) + 1e-9)
+                for c in range(3)
+            ]
+            bias = float(np.mean(chan_rel))
+
+        mean_ref = float(np.mean(mean_rgb))
+        rel_se = np.sqrt(2.0) * sigma / (mean_ref + 1e-9) / side
+        tot = float(np.sqrt(rel_se ** 2 + bias ** 2))
+
+        if best_tot is None or tot < best_tot:
+            best_tot, best_r, best_mean = tot, r, mean_rgb
+
+    if best_mean is None:
+        return None
+    return best_mean, best_r

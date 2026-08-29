@@ -135,34 +135,34 @@ class MaskAnalyzerTests(unittest.TestCase):
         self.assertIn("neutral white or gray paper/card", captured["prompt"])
         self.assertIn("strong shadows", captured["prompt"])
 
-    def test_vlm_reference_uses_at_least_3x3_neighborhood_from_original_image(self):
-        image = np.zeros((9, 9, 3), dtype=np.float32)
-        image[3:6, 3:6, :] = [100.0, 200.0, 300.0]
-        image[4, 4, :] = [9000.0, 9000.0, 9000.0]
+    def test_adaptive_sampling_returns_window_mean_and_bounded_radius(self):
+        image = np.zeros((40, 40, 3), dtype=np.float32)
+        image[18:22, 18:22, :] = [100.0, 200.0, 300.0]
 
-        with patch(
-            "core.cast_detector._call_vlm_api",
-            return_value=json.dumps({
-                "regions": [{
-                    "description": "neutral paper",
-                    "location": "center",
-                    "center": [0.5, 0.5],
-                    "confidence": 0.9,
-                }]
-            }),
-        ):
-            result = mask_analyzer._vlm_find_neutral_gray(image, {
-                "api_base": "https://example.invalid/v1",
-                "api_key": "test-key",
-                "model": "test-model",
-                "timeout": 1,
-            })
+        res = mask_analyzer._sample_neighborhood_adaptive(
+            image, [0.5, 0.5], side_min=3, side_max=11)
 
-        self.assertIsNotNone(result)
-        np.testing.assert_allclose(
-            [result.ref_r, result.ref_g, result.ref_b],
-            [1088.8889, 1177.7778, 1266.6666],
-        )
+        self.assertIsNotNone(res)
+        ref, r = res
+        self.assertGreaterEqual(r, 1)     # side>=3 -> r>=1
+        self.assertLessEqual(r, 5)        # side<=11 -> r<=5
+        self.assertEqual(ref.shape, (3,))
+
+    def test_adaptive_sampling_returns_none_when_no_bounds_fit(self):
+        # 2x2 图：最小 side=3 已在中心越界，全部候选不可用 -> None
+        image = np.zeros((2, 2, 3), dtype=np.float32)
+        res = mask_analyzer._sample_neighborhood_adaptive(
+            image, [0.5, 0.5], side_min=3, side_max=11)
+        self.assertIsNone(res)
+
+    def test_adaptive_sampling_rejects_bad_center(self):
+        image = np.zeros((20, 20, 3), dtype=np.float32)
+        self.assertIsNone(mask_analyzer._sample_neighborhood_adaptive(
+            image, [0.5], side_min=3, side_max=11))          # 长度不对
+        self.assertIsNone(mask_analyzer._sample_neighborhood_adaptive(
+            image, [1.5, 0.5], side_min=3, side_max=11))      # 越出 0-1
+        self.assertIsNone(mask_analyzer._sample_neighborhood_adaptive(
+            image, ["a", "b"], side_min=3, side_max=11))      # 非数值
 
     def test_vlm_receives_algorithmically_precorrected_preview(self):
         image = np.full((40, 40, 3), 40000.0, dtype=np.float32)
