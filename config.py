@@ -15,6 +15,7 @@ VLM_API_BASE = ""
 VLM_API_KEY = ""
 VLM_MODEL = "openrouter/openai/gpt-4o-mini"
 VLM_TIMEOUT = 30
+VLM_REASONING_EFFORT = "auto"  # auto | off | minimal | low | medium | high
 
 # ONNX 模型路径
 ONNX_MODEL_PATH = "models/cast_detector.onnx"
@@ -23,6 +24,7 @@ ONNX_MODEL_PATH = "models/cast_detector.onnx"
 FILM_TYPE = "negative"        # "negative" | "positive"
 WARMTH_STYLE = "natural"      # "natural" | "kodak_gold" | "fuji_superia"
 WARMTH_STRENGTH = 1.0         # 0.0 ~ 2.0
+WARMTH_ENABLED = False        # 暖调功能暂时禁用
 LEVELS_PERCENTILE = 0.2       # 色阶裁剪百分位
 MAX_FEEDBACK_ITERATIONS = 10  # AI 反馈最大迭代次数
 CAST_THRESHOLD = 0.15         # 偏色容忍度

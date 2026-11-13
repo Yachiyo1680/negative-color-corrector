@@ -16,8 +16,9 @@ import gradio as gr
 
 from core import Engine, CorrectionConfig
 from core.warmth import get_warmth_presets
-from core.cast_detector import get_available_backends
+from core.cast_detector import REASONING_EFFORT_CHOICES, get_available_backends
 from core.config_manager import ConfigManager
+from core.model_provider import PROVIDERS
 
 
 def _correct(
@@ -26,6 +27,7 @@ def _correct(
     warmth_style,
     warmth_strength,
     detector_mode,
+    reasoning_effort,
 ):
     """校色处理函数（Gradio 回调）"""
     if input_img is None:
@@ -37,18 +39,42 @@ def _correct(
     cfg_mgr = ConfigManager()
     cfg_mgr.init_default_config()
     cfg = cfg_mgr.load()
-    api_key = cfg_mgr.get_api_key("openrouter") or cfg_mgr.get_api_key("custom")
-    api_base = cfg.detector.api_base
     model = cfg.detector.model
+    provider_id = cfg.detector.provider or "auto"
+    if provider_id in PROVIDERS:
+        provider = PROVIDERS[provider_id]
+        api_key = cfg_mgr.get_api_key(provider_id)
+        api_base = cfg.detector.api_base or provider.base_url
+    else:
+        api_key = (
+            cfg_mgr.get_api_key("openrouter")
+            or cfg_mgr.get_api_key("openai")
+            or cfg_mgr.get_api_key("gemini")
+            or cfg_mgr.get_api_key("deepseek")
+            or cfg_mgr.get_api_key("custom")
+        )
+        api_base = cfg.detector.api_base
+        if not api_base and api_key:
+            model_lower = model.lower()
+            if "/" in model:
+                api_base = PROVIDERS["openrouter"].base_url
+            elif "deepseek" in model_lower:
+                api_base = PROVIDERS["deepseek"].base_url
+            elif "gemini" in model_lower:
+                api_base = PROVIDERS["gemini"].base_url
+            else:
+                api_base = PROVIDERS["openai"].base_url
 
     config = CorrectionConfig(
         film_type=film_type,
         warmth_style=warmth_style,
         warmth_strength=warmth_strength,
+        warmth_enabled=cfg.correction.warmth_enabled,
         detector_mode=detector_mode,
         vlm_api_key=api_key,
         vlm_api_base=api_base,
         vlm_model=model,
+        vlm_reasoning_effort=reasoning_effort,
     )
 
     try:
@@ -113,9 +139,9 @@ def launch(server_name: str = "127.0.0.1", server_port: int = 7860):
                         value="negative",
                     )
                     warmth_style = gr.Dropdown(
-                        label="暖调风格",
+                        label="暖调风格（当前暂时禁用）",
                         choices=warmth_choices,
-                        value="natural",
+                        value="none",
                     )
                     warmth_strength = gr.Slider(
                         label="暖调强度",
@@ -126,6 +152,12 @@ def launch(server_name: str = "127.0.0.1", server_port: int = 7860):
                         label="偏色检测后端",
                         choices=backend_choices,
                         value="auto",
+                    )
+                    reasoning_effort = gr.Dropdown(
+                        label="模型思考强度",
+                        choices=list(REASONING_EFFORT_CHOICES),
+                        value="auto",
+                        info="auto 使用模型默认值；仅对支持该参数的推理模型生效",
                     )
 
                 correct_btn = gr.Button(
@@ -150,7 +182,7 @@ def launch(server_name: str = "127.0.0.1", server_port: int = 7860):
         correct_btn.click(
             fn=_correct,
             inputs=[input_img, film_type, warmth_style,
-                    warmth_strength, detector_mode],
+                    warmth_strength, detector_mode, reasoning_effort],
             outputs=[output_img, summary],
         )
 

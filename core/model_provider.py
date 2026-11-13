@@ -56,6 +56,13 @@ PROVIDERS = {
         api_key_env="GEMINI_API_KEY",
         default_model="gemini-2.0-flash",
     ),
+    "deepseek": Provider(
+        id="deepseek",
+        label="DeepSeek",
+        base_url="https://api.deepseek.com",
+        api_key_env="DEEPSEEK_API_KEY",
+        default_model="deepseek-flash",
+    ),
     "ollama": Provider(
         id="ollama",
         label="Ollama (本地)",
@@ -84,6 +91,7 @@ class APIConfig:
     base_url: str = ""                # 自定义 URL（custom provider 用）
     model: str = "openai/gpt-4o-mini"  # 具体模型名
     timeout: int = 30                 # 超时秒数
+    reasoning_effort: str = "auto"    # auto | off | minimal | low | medium | high
 
     def to_dict(self) -> dict:
         return {
@@ -92,6 +100,7 @@ class APIConfig:
             "base_url": self.base_url,
             "model": self.model,
             "timeout": self.timeout,
+            "reasoning_effort": self.reasoning_effort,
         }
 
     @classmethod
@@ -102,6 +111,7 @@ class APIConfig:
             base_url=data.get("base_url", ""),
             model=data.get("model", "openai/gpt-4o-mini"),
             timeout=data.get("timeout", 30),
+            reasoning_effort=data.get("reasoning_effort", "auto"),
         )
 
 
@@ -166,6 +176,11 @@ def get_default_models(provider_id: str) -> list[str]:
             "gemini-2.5-pro",
             "gemini-2.0-flash-lite",
         ],
+        "deepseek": [
+            "deepseek-flash",
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ],
         "ollama": [
             "llava",
             "llava:13b",
@@ -185,7 +200,7 @@ def get_suitable_cast_models(api_config: APIConfig) -> list[str]:
     all_models = fetch_available_models(api_config)
     # 过滤视觉模型
     keywords = ["vision", "vl", "vlm", "mini", "flash",
-                "llava", "moondream", "4o", "gemini"]
+                "llava", "moondream", "4o", "gemini", "deepseek"]
     suitable = [m for m in all_models
                 if any(kw in m.lower() for kw in keywords)]
     return suitable if suitable else all_models
@@ -204,4 +219,5 @@ def build_vlm_config(api_config: APIConfig) -> dict:
         "vlm_api_key": api_config.api_key,
         "vlm_model": api_config.model,
         "vlm_timeout": api_config.timeout,
+        "vlm_reasoning_effort": api_config.reasoning_effort,
     }

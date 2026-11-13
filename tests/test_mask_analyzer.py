@@ -1,4 +1,7 @@
+import base64
 import json
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -8,6 +11,18 @@ from core import mask_analyzer
 
 
 class MaskAnalyzerTests(unittest.TestCase):
+    def setUp(self):
+        self._cache_dir = tempfile.TemporaryDirectory()
+        self._cache_env = patch.dict(os.environ, {
+            "NCC_CACHE_DIR": self._cache_dir.name,
+            "NCC_DISABLE_CACHE": "",
+        })
+        self._cache_env.start()
+
+    def tearDown(self):
+        self._cache_env.stop()
+        self._cache_dir.cleanup()
+
     def test_find_gray_pixels_supports_16bit_images(self):
         image = np.full((20, 20, 3), 40000.0, dtype=np.float32)
 
@@ -170,7 +185,7 @@ class MaskAnalyzerTests(unittest.TestCase):
 
         def fake_encode(preview):
             captured["preview"] = preview.copy()
-            return "encoded"
+            return base64.b64encode(b"encoded").decode("ascii")
 
         with patch("core.cast_detector._encode_image", side_effect=fake_encode), \
              patch(

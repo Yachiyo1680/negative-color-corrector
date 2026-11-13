@@ -10,9 +10,17 @@
 """
 
 from dataclasses import dataclass
+import base64
 import json
 import numpy as np
 from typing import Optional
+
+from .cache import (
+    build_photo_cache_key,
+    cache_enabled,
+    load_preprocessed_jpeg,
+    store_preprocessed_jpeg,
+)
 
 
 @dataclass
@@ -123,9 +131,6 @@ def _vlm_find_neutral_gray(image: np.ndarray, vlm_config: dict) -> Optional[Mask
     """
     from .cast_detector import _encode_image
 
-    img_max = float(image.max()) if image.max() > 0 else 255.0
-    img_for_vlm = _prepare_vlm_preview(image, vlm_config)
-
     prompt = """Analyze this already-inverted color-negative scan.
 
 Your task is to identify 1-3 regions in the depicted original scene that
@@ -159,10 +164,34 @@ selection can be audited. Respond in JSON only:
 "center": [x, y], "confidence": 0.0}]}
 
 Return 1-3 credible regions. Return {"regions": []} only when no credible
-neutral reference exists."""
+    neutral reference exists."""
 
     try:
-        img_b64 = _encode_image(img_for_vlm)
+        use_cache = cache_enabled()
+        photo_key = vlm_config.get("photo_key")
+        if not photo_key:
+            photo_key = build_photo_cache_key(image)
+
+        if "cached_preprocessed_jpeg" in vlm_config:
+            cached_jpeg = vlm_config.get("cached_preprocessed_jpeg")
+        else:
+            cached_jpeg = (
+                load_preprocessed_jpeg(photo_key) if use_cache else None
+            )
+            if cached_jpeg is not None:
+                print("[MaskAnalyzer] 命中预处理缓存")
+
+        if cached_jpeg is not None:
+            img_b64 = base64.b64encode(cached_jpeg).decode("utf-8")
+        else:
+            img_for_vlm = _prepare_vlm_preview(image, vlm_config)
+            img_b64 = _encode_image(img_for_vlm)
+            if use_cache:
+                stored = store_preprocessed_jpeg(
+                    photo_key, base64.b64decode(img_b64))
+                if stored:
+                    print("[MaskAnalyzer] 已写入预处理缓存")
+
         data = _request_vlm_json(
             api_base=vlm_config.get("api_base", ""),
             api_key=vlm_config.get("api_key", ""),
@@ -170,6 +199,7 @@ neutral reference exists."""
             prompt=prompt,
             image_b64=img_b64,
             timeout=vlm_config.get("timeout", 30),
+            reasoning_effort=vlm_config.get("reasoning_effort", "auto"),
         )
         regions = data.get("regions", [])
         if not regions:

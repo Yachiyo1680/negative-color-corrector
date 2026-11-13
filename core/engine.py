@@ -16,6 +16,11 @@ from .channel_comp import apply_channel_compensation
 from .auto_levels import auto_levels
 from .warmth import apply_warmth, WarmthStyle
 from .cast_detector import DetectorFactory, CastDetector, CastResult
+from .cache import (
+    build_photo_cache_key,
+    cache_enabled,
+    load_preprocessed_jpeg,
+)
 
 
 @dataclass
@@ -24,6 +29,7 @@ class CorrectionConfig:
     film_type: str = "negative"        # "negative" | "positive"
     warmth_style: WarmthStyle = "natural"
     warmth_strength: float = 1.0       # 0.0 (不暖) ~ 2.0 (超暖)
+    warmth_enabled: bool = False       # 暖调功能暂未启用
     levels_percentile: float = 0.2     # 色阶裁剪百分位
     max_iterations: int = 10           # AI反馈最大迭代次数
     cast_threshold: float = 0.15       # 偏色容忍度 (低于此值视为OK)
@@ -32,6 +38,7 @@ class CorrectionConfig:
     vlm_api_key: str = ""
     vlm_api_base: str = ""
     vlm_model: str = "openai/gpt-4o-mini"
+    vlm_reasoning_effort: str = "auto"
 
 
 @dataclass
@@ -62,6 +69,7 @@ class Engine:
                 "vlm_api_key": self.config.vlm_api_key,
                 "vlm_api_base": self.config.vlm_api_base,
                 "vlm_model": self.config.vlm_model,
+                "vlm_reasoning_effort": self.config.vlm_reasoning_effort,
             })
         return self.detector
 
@@ -83,6 +91,16 @@ class Engine:
             max_val = 255.0
             bit_depth = 8
 
+        # 预处理缓存按照片内容命中，必须在反相前查询。
+        photo_key = None
+        cached_preprocessed_jpeg = None
+        if self.config.vlm_api_key and cache_enabled():
+            photo_key = build_photo_cache_key(image)
+            cached_preprocessed_jpeg = load_preprocessed_jpeg(photo_key)
+            if cached_preprocessed_jpeg is not None:
+                print("[Engine] 命中预处理缓存"
+                      "（仅复用 VLM 预览；稍后仍反相用于最终全分辨率校色）")
+
         img = image.astype(np.float32)
         h, w = img.shape[:2]
 
@@ -101,7 +119,10 @@ class Engine:
                 "api_key": self.config.vlm_api_key,
                 "model": self.config.vlm_model,
                 "timeout": 30,
+                "reasoning_effort": self.config.vlm_reasoning_effort,
                 "levels_percentile": self.config.levels_percentile,
+                "photo_key": photo_key,
+                "cached_preprocessed_jpeg": cached_preprocessed_jpeg,
             }
         mask_info = analyze_mask(img, vlm_config=vlm_cfg)
         print(f"[Engine] 色罩分析: {mask_info}")
@@ -118,11 +139,16 @@ class Engine:
                           max_val=max_val)
         print("[Engine] 智能色阶完成")
 
-        # ── Step 5: 暖调控制 ──
-        img = apply_warmth(img, style=self.config.warmth_style,
-                           strength=self.config.warmth_strength,
-                           max_val=max_val)
-        print(f"[Engine] 暖调完成: {self.config.warmth_style}")
+        # ── Step 5: 暖调控制（暂时禁用） ──
+        if self.config.warmth_enabled:
+            img = apply_warmth(img, style=self.config.warmth_style,
+                               strength=self.config.warmth_strength,
+                               max_val=max_val)
+            applied_warmth_style = self.config.warmth_style
+            print(f"[Engine] 暖调完成: {applied_warmth_style}")
+        else:
+            applied_warmth_style = "none"
+            print("[Engine] 暖调已禁用（warmth_enabled=false）")
 
         # ── Step 6: AI 偏色检测 + 修正（仅 -w none 以外时） ──
         img_out = img.copy()
@@ -161,7 +187,7 @@ class Engine:
             mask_info=mask_info,
             iterations=iters,
             final_cast=final_cast,
-            warm_style=self.config.warmth_style,
+            warm_style=applied_warmth_style,
             detector_warning=self._detector_warning,
             bit_depth=bit_depth,
         )

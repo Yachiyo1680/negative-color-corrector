@@ -21,6 +21,8 @@ import argparse
 from PIL import Image
 import numpy as np
 
+from core.cast_detector import REASONING_EFFORT_CHOICES
+
 BATCH_LIMIT = 40
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
 
@@ -34,13 +36,17 @@ def main():
     parser.add_argument("input", nargs="*", default=[],
                         help="输入图片路径（支持多个，批量处理最多40张）")
     parser.add_argument("-o", "--output", default="",
-                        help="输出路径（默认在原文件名上加 _corrected）")
+                        help="完整输出路径（默认保存到原目录的 _corrected/ 子目录）")
+    parser.add_argument("--filename", "--output-name",
+                        dest="output_filename", default="",
+                        help="指定导出文件名（不含目录），仍保存到 _corrected/；"
+                             "单张图片模式可用")
     parser.add_argument("-f", "--film-type", default="negative",
                         choices=["negative", "positive"],
                         help="胶片类型: negative(负片) / positive(正片)")
-    parser.add_argument("-w", "--warmth", default="natural",
+    parser.add_argument("-w", "--warmth", default=None,
                         choices=["none", "natural", "kodak_gold", "fuji_superia", "cool"],
-                        help="暖调风格 (none=无色偏)")
+                        help="暖调风格 (none=无色偏；当前版本暖调暂时禁用)")
     parser.add_argument("-s", "--strength", type=float, default=1.0,
                         help="暖调强度 0.0~2.0")
     parser.add_argument("-d", "--detector", default="auto",
@@ -48,15 +54,20 @@ def main():
                         help="偏色检测后端")
     parser.add_argument("--provider", default="auto",
                         choices=["auto", "openrouter", "openai",
-                                 "gemini", "custom", "ollama"],
+                                 "gemini", "deepseek", "custom", "ollama"],
                         help="API Provider: auto=自动选择(默认); "
                              "显式指定后由该 Provider 决定 API Key、地址和默认模型")
     parser.add_argument("--api-key", default="",
                         help="VL 模型 API Key")
     parser.add_argument("--api-base", default="",
                         help="VL 模型 API 地址")
-    parser.add_argument("--model", default="openai/gpt-4o-mini",
+    parser.add_argument("--model", default=None,
                         help="VL 模型名")
+    parser.add_argument("--reasoning-effort", "--thinking-effort",
+                        dest="reasoning_effort", default=None,
+                        choices=REASONING_EFFORT_CHOICES,
+                        help="模型思考强度: auto/off/minimal/low/medium/high "
+                             "(默认读取配置；auto=不发送，off=显式关闭)")
     parser.add_argument("--percentile", type=float, default=0.2,
                         help="色阶裁剪百分位")
     parser.add_argument("--max-iter", type=int, default=10,
@@ -93,6 +104,18 @@ def main():
     if len(args.input) > BATCH_LIMIT:
         print(f"[NCC] 错误: 一次最多处理 {BATCH_LIMIT} 张图片，当前 {len(args.input)} 张")
         sys.exit(1)
+
+    if args.output_filename:
+        if args.output:
+            parser.error("--filename/--output-name 不能与 --output 同时使用")
+        if len(args.input) != 1:
+            parser.error("--filename/--output-name 仅支持单张图片；"
+                         "批量模式请使用默认命名或 --output")
+        try:
+            args.output_filename = _normalize_output_filename(
+                args.output_filename, args.input[0])
+        except ValueError as e:
+            parser.error(str(e))
 
     _run_cli(args)
 
@@ -158,10 +181,23 @@ def _run_cli(args):
         provider_id = getattr(cfg.detector, "provider", "auto") or "auto"
     if provider_id not in PROVIDERS:
         provider_id = "auto"
+    configured_provider = getattr(cfg.detector, "provider", "auto") or "auto"
 
-    model = args.model if args.model != "openai/gpt-4o-mini" else cfg.detector.model
-    model_is_default = (args.model == "openai/gpt-4o-mini"
-                        and cfg.detector.model == "openai/gpt-4o-mini")
+    model = args.model or cfg.detector.model
+    if (
+        args.model is None
+        and provider_id != "auto"
+        and (
+            provider_id != configured_provider
+            or cfg.detector.model == "openai/gpt-4o-mini"
+        )
+    ):
+        model = PROVIDERS[provider_id].default_model
+    reasoning_effort = (
+        args.reasoning_effort
+        if args.reasoning_effort is not None
+        else cfg.detector.reasoning_effort
+    )
 
     if provider_id == "auto":
         # 自动模式: Key 优先级 openrouter > openai > gemini > custom
@@ -169,6 +205,7 @@ def _run_cli(args):
                    or cfg_mgr.get_api_key("openrouter")
                    or cfg_mgr.get_api_key("openai")
                    or cfg_mgr.get_api_key("gemini")
+                   or cfg_mgr.get_api_key("deepseek")
                    or cfg_mgr.get_api_key("custom"))
         # api_base: 用户指定 > 配置文件 > 根据模型名自动推断
         api_base = args.api_base or cfg.detector.api_base
@@ -177,6 +214,8 @@ def _run_cli(args):
             if "/" in model:
                 # OpenRouter 风格模型名 (provider/model)，默认走 OpenRouter
                 api_base = PROVIDERS["openrouter"].base_url
+            elif "deepseek" in model_lower:
+                api_base = PROVIDERS["deepseek"].base_url
             elif "gemini" in model_lower:
                 api_base = PROVIDERS["gemini"].base_url
             else:
@@ -191,9 +230,6 @@ def _run_cli(args):
         else:
             api_base = (args.api_base or cfg.detector.api_base
                         or provider.base_url)
-        # 用户没有自定义模型时，使用该 Provider 的默认模型
-        if model_is_default and provider.default_model:
-            model = provider.default_model
     max_iter = args.max_iter if args.max_iter != 10 else cfg.detector.max_iterations
     threshold = args.threshold if args.threshold != 0.15 else cfg.detector.cast_threshold
 
@@ -202,6 +238,7 @@ def _run_cli(args):
         film_type=film_type,
         warmth_style=warmth_style,
         warmth_strength=warmth_strength,
+        warmth_enabled=cfg.correction.warmth_enabled,
         levels_percentile=levels_percentile,
         max_iterations=max_iter,
         cast_threshold=threshold,
@@ -209,6 +246,7 @@ def _run_cli(args):
         vlm_api_key=api_key,
         vlm_api_base=api_base,
         vlm_model=model,
+        vlm_reasoning_effort=reasoning_effort,
     )
 
     inputs = args.input  # 可能有多张图
@@ -277,7 +315,8 @@ def _run_cli(args):
                 print(f"[NCC] ⚠️ {result.detector_warning}")
 
             # 保存（保留原始位深）
-            output_path = args.output or _default_output(input_path)
+            output_path = args.output or _default_output(
+                input_path, args.output_filename)
             if result.bit_depth == 16:
                 try:
                     import tifffile
@@ -316,10 +355,22 @@ def _run_cli(args):
         print(f"{'='*50}\n")
 
 
-def _default_output(input_path: str) -> str:
+def _normalize_output_filename(output_filename: str, input_path: str) -> str:
+    """校验导出文件名；未写扩展名时沿用输入图片的扩展名。"""
+    filename = output_filename.strip()
+    if not filename:
+        raise ValueError("导出文件名不能为空")
+    if os.path.basename(filename) != filename:
+        raise ValueError("--filename/--output-name 只能填写文件名，不能包含目录")
+    if not os.path.splitext(filename)[1]:
+        filename += os.path.splitext(input_path)[1]
+    return filename
+
+
+def _default_output(input_path: str, output_filename: str = "") -> str:
     """生成默认输出路径：原文件夹下的 _corrected/ 子目录"""
     directory = os.path.dirname(input_path) or "."
-    filename = os.path.basename(input_path)
+    filename = output_filename or os.path.basename(input_path)
     output_dir = os.path.join(directory, "_corrected")
     os.makedirs(output_dir, exist_ok=True)
     return os.path.join(output_dir, filename)

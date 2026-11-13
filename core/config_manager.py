@@ -30,6 +30,7 @@ class DetectorConfig:
     mode: str = "auto"           # auto | heuristic | onnx | vlm_api
     provider: str = "auto"       # auto | openrouter | openai | gemini | custom | ollama
     model: str = "openai/gpt-4o-mini"
+    reasoning_effort: str = "auto"  # auto | off | minimal | low | medium | high
     api_base: str = ""           # 自定义 API 地址
     timeout: int = 30
     max_iterations: int = 10
@@ -42,6 +43,7 @@ class CorrectionConfig:
     film_type: str = "negative"   # negative | positive
     warmth_style: str = "natural" # natural | kodak_gold | fuji_superia
     warmth_strength: float = 1.0  # 0.0 ~ 2.0
+    warmth_enabled: bool = False  # 暖调功能暂未启用
     levels_percentile: float = 0.2
 
 
@@ -51,6 +53,7 @@ class ProvidersConfig:
     openrouter_api_key: str = "${OPENROUTER_API_KEY}"
     openai_api_key: str = "${OPENAI_API_KEY}"
     gemini_api_key: str = "${GEMINI_API_KEY}"
+    deepseek_api_key: str = "${DEEPSEEK_API_KEY}"
     custom_api_key: str = "${NCC_API_KEY}"
     custom_api_base: str = ""
 
@@ -206,6 +209,9 @@ DEFAULT_CONFIG_CONTENT = """// ~/.negative-corrector/config.json5
     // Google Gemini API Key
     gemini_api_key: "${GEMINI_API_KEY}",
 
+    // DeepSeek API Key
+    deepseek_api_key: "${DEEPSEEK_API_KEY}",
+
     // 自定义 API Key（OpenAI 兼容接口）
     custom_api_key: "${NCC_API_KEY}",
     custom_api_base: "",
@@ -216,12 +222,16 @@ DEFAULT_CONFIG_CONTENT = """// ~/.negative-corrector/config.json5
     // 可选: "auto" | "heuristic" | "onnx" | "vlm_api"
     mode: "auto",
 
-    // API Provider: "auto"(按Key优先级) | "openrouter" | "openai" | "gemini" | "custom" | "ollama"
+    // API Provider: "auto"(按Key优先级) | "openrouter" | "openai" | "gemini" | "deepseek" | "custom" | "ollama"
     // 显式指定后，由该 Provider 决定 API Key、地址和默认模型
     provider: "auto",
 
     // VL 模型名（detector.mode = "vlm_api" 时使用）
     model: "openai/gpt-4o-mini",
+
+    // 模型思考强度: "auto" | "off" | "minimal" | "low" | "medium" | "high"
+    // auto 表示不发送该参数（使用模型默认值）；off 表示显式关闭思考
+    reasoning_effort: "auto",
 
     // 自定义 API 地址（留空使用provider默认地址）
     api_base: "",
@@ -243,6 +253,9 @@ DEFAULT_CONFIG_CONTENT = """// ~/.negative-corrector/config.json5
 
     // 暖调风格: "natural" | "kodak_gold" | "fuji_superia"
     warmth_style: "natural",
+
+    // 暖调功能暂时禁用；后续启用时改为 true
+    warmth_enabled: false,
 
     // 暖调强度: 0.0 ~ 2.0
     warmth_strength: 1.0,
@@ -367,6 +380,7 @@ class ConfigManager:
             "openrouter": "openrouter_api_key",
             "openai": "openai_api_key",
             "gemini": "gemini_api_key",
+            "deepseek": "deepseek_api_key",
             "custom": "custom_api_key",
         }
 
@@ -374,6 +388,7 @@ class ConfigManager:
             "openrouter": "OPENROUTER_API_KEY",
             "openai": "OPENAI_API_KEY",
             "gemini": "GEMINI_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
             "custom": "NCC_API_KEY",
         }
 
@@ -427,6 +442,10 @@ class ConfigManager:
                     providers_data.get("gemini_api_key",
                                        "${GEMINI_API_KEY}")
                 ),
+                deepseek_api_key=str(
+                    providers_data.get("deepseek_api_key",
+                                       "${DEEPSEEK_API_KEY}")
+                ),
                 custom_api_key=str(
                     providers_data.get("custom_api_key", "${NCC_API_KEY}")
                 ),
@@ -438,6 +457,9 @@ class ConfigManager:
                 mode=str(detector_data.get("mode", "auto")),
                 provider=str(detector_data.get("provider", "auto")),
                 model=str(detector_data.get("model", "openai/gpt-4o-mini")),
+                reasoning_effort=str(
+                    detector_data.get("reasoning_effort", "auto")
+                ),
                 api_base=str(detector_data.get("api_base", "")),
                 timeout=int(detector_data.get("timeout", 30)),
                 max_iterations=int(detector_data.get("max_iterations", 10)),
@@ -450,6 +472,9 @@ class ConfigManager:
                 ),
                 warmth_strength=float(
                     correction_data.get("warmth_strength", 1.0)
+                ),
+                warmth_enabled=bool(
+                    correction_data.get("warmth_enabled", False)
                 ),
                 levels_percentile=float(
                     correction_data.get("levels_percentile", 0.2)

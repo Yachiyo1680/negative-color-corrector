@@ -354,13 +354,24 @@ python main.py ./scans/ -w none
 # 文件夹递归校色（含子文件夹）
 python main.py ./scans/ -r -w none
 
+# 指定导出文件名（仍保存到原目录的 _corrected/，适合对比测试）
+python main.py scan.tiff -w none --filename comparison_high.jpg
+
 # 使用 VLM 模型做偏色分析（需 OpenRouter API Key）
 python main.py scan.tiff -w none -d vlm_api --model "openai/gpt-4o-mini"
+
+# 设置模型思考强度（auto/off/minimal/low/medium/high）
+# auto 使用模型默认值；off 显式关闭思考
+# 注意：Gemini 3.1 Lite 支持完全关闭；3.5 Lite 无法完全关闭，off 使用最低档 minimal
+python main.py scan.tiff -d vlm_api --model "openai/gpt-5" --reasoning-effort high
+python main.py scan.tiff -d vlm_api --model "openai/gpt-5" --reasoning-effort off
 
 # 指定 Provider 做偏色分析（Key/API地址/默认模型自动从该 Provider 读取）
 python main.py scan.tiff -w none -d vlm_api --provider openrouter
 python main.py scan.tiff -w none -d vlm_api --provider gemini
 python main.py scan.tiff -w none -d vlm_api --provider openai
+python main.py scan.tiff -w none -d vlm_api --provider deepseek
+# DeepSeek 默认模型: deepseek-flash；Key 可用环境变量 DEEPSEEK_API_KEY
 
 # 本地 Ollama（无需 API Key）
 python main.py scan.tiff -w none -d vlm_api --provider ollama --model llava
@@ -376,7 +387,28 @@ pip install gradio
 python main.py --gui
 ```
 
+### 预处理缓存
+
+与模型无关的预处理结果会缓存到配置文件所在目录：
+
+```text
+~/.negative-corrector/cache/preprocess/
+├─ index.json       # 原图 hash -> 缓存文件索引
+└─ preprocess-v2-<hash>.jpg
+```
+
+缓存在反相前按原图像素内容查询，键不包含模型、Provider、思考强度。不同模型会复用同一份预处理结果，但仍会分别调用各自模型。需要强制重算时，删除该目录即可；临时关闭缓存可设置：
+
+缓存内容是已经反相并预校色的 8-bit VLM 预览图，不是最终输出。命中后仍会执行反相，因为最终中性灰采样和输出需要原始位深、全分辨率的反相图；缓存只替代预览图的重复生成。
+
+```powershell
+$env:NCC_DISABLE_CACHE = "1"
+```
+
 ### 暖调风格选项
+
+> 当前版本暖调功能暂时禁用（`correction.warmth_enabled = false`）。
+> 即使选择下面的风格，实际输出也不会叠加暖调；后续启用时改为 `true` 即可。
 
 | 参数 | 效果 | R调整 | G调整 | B调整 |
 |------|------|-------|-------|-------|

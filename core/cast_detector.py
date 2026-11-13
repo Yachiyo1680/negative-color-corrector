@@ -16,11 +16,17 @@ import requests
 import numpy as np
 from PIL import Image
 
-
 # ─── 数据类型 ──────────────────────────────────────────────
 
 CastType = Literal["blue", "green", "magenta", "yellow", "cyan",
                    "warm", "cool", "ok"]
+
+REASONING_EFFORT_CHOICES = (
+    "auto", "off", "minimal", "low", "medium", "high",
+)
+
+VLM_MAX_IMAGE_EDGE = 4096
+
 
 @dataclass
 class CastResult:
@@ -159,11 +165,12 @@ class VLModelCastDetector(CastDetector):
 
     def __init__(self, api_base: str = "", api_key: str = "",
                  model: str = "openrouter/openai/gpt-4o-mini",
-                 timeout: int = 30):
+                 timeout: int = 30, reasoning_effort: str = "auto"):
         self.api_base = api_base
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
+        self.reasoning_effort = reasoning_effort
 
     def name(self) -> str:
         return f"vlm_api:{self.model}"
@@ -186,6 +193,7 @@ class VLModelCastDetector(CastDetector):
             prompt=self._build_prompt(),
             image_b64=img_b64,
             timeout=self.timeout,
+            reasoning_effort=self.reasoning_effort,
         )
         return self._parse_response(response_text)
 
@@ -364,6 +372,8 @@ class DetectorFactory:
                 model=config.get("vlm_model",
                                  "openrouter/openai/gpt-4o-mini"),
                 timeout=config.get("vlm_timeout", 30),
+                reasoning_effort=config.get(
+                    "vlm_reasoning_effort", "auto"),
             ),
         }
 
@@ -416,13 +426,26 @@ class DetectorFactory:
 
 def _encode_image(image: np.ndarray) -> str:
     """将 numpy 图像编码为 base64 JPEG"""
+    return base64.b64encode(
+        _encode_image_bytes(image)
+    ).decode("utf-8")
+
+
+def _encode_image_bytes(image: np.ndarray) -> bytes:
+    """将 numpy 图像编码为 JPEG 字节。"""
     img_pil = Image.fromarray(
         image.astype(np.uint8) if image.dtype != np.uint8
         else image
     )
+    if max(img_pil.size) > VLM_MAX_IMAGE_EDGE:
+        resampling = getattr(Image, "Resampling", Image).LANCZOS
+        img_pil.thumbnail(
+            (VLM_MAX_IMAGE_EDGE, VLM_MAX_IMAGE_EDGE),
+            resampling,
+        )
     buf = io.BytesIO()
     img_pil.save(buf, format="JPEG", quality=92)
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
+    return buf.getvalue()
 
 
 def _call_vlm_api(
@@ -432,6 +455,7 @@ def _call_vlm_api(
     prompt: str,
     image_b64: str,
     timeout: int = 30,
+    reasoning_effort: str = "auto",
 ) -> str:
     """调用 OpenAI 兼容的 VL 模型 API
 
@@ -448,6 +472,8 @@ def _call_vlm_api(
     if is_openrouter:
         headers["HTTP-Referer"] = "https://github.com/Yachiyo1680/negative-color-corrector"
         headers["X-Title"] = "Negative Color Corrector"
+
+    effort = _normalize_reasoning_effort(reasoning_effort)
 
     # 推理模型（reasoning model）会先输出大段思考再给答案，
     # 固定 256 个 token 会被思考过程耗尽，导致 content 为空。
@@ -481,6 +507,22 @@ def _call_vlm_api(
         "temperature": 0.1,
         "response_format": {"type": "json_object"},
     }
+    if effort:
+        if effort == "off":
+            if is_openrouter:
+                payload["reasoning"] = {"enabled": False}
+            elif _is_gemini_api(api_base, model):
+                if "gemini-3.5" in model.lower():
+                    # Gemini 3.5 Flash Lite 不接受 "none"；minimal 是最低档。
+                    payload["reasoning_effort"] = "minimal"
+                else:
+                    payload["reasoning_effort"] = "none"
+            else:
+                payload["reasoning_effort"] = "none"
+        elif is_openrouter:
+            payload["reasoning"] = {"effort": effort}
+        else:
+            payload["reasoning_effort"] = effort
 
     # 确定 API URL
     base = api_base.rstrip("/") if api_base else "https://openrouter.ai/api/v1"
@@ -527,3 +569,22 @@ def _call_vlm_api(
         )
 
     return content.strip()
+
+
+def _normalize_reasoning_effort(value: str) -> str:
+    """将思考强度规范为 API 参数；auto/空值表示不发送该参数。"""
+    effort = str(value or "").strip().lower()
+    if effort in ("", "auto", "default"):
+        return ""
+    if effort not in REASONING_EFFORT_CHOICES:
+        print(f"[VLM] 忽略未知思考强度: {value}")
+        return ""
+    return effort
+
+
+def _is_gemini_api(api_base: str, model: str) -> bool:
+    """判断请求是否走 Gemini 原生/OpenAI 兼容端点。"""
+    return (
+        "generativelanguage.googleapis.com" in (api_base or "").lower()
+        or (model or "").lower().startswith("gemini")
+    )
