@@ -424,27 +424,32 @@ class DetectorFactory:
 # ══════════════════════════════════════════════════════════
 
 
-def _encode_image(image: np.ndarray) -> str:
+def _encode_image(
+    image: np.ndarray,
+    max_edge: int = VLM_MAX_IMAGE_EDGE,
+    quality: int = 92,
+) -> str:
     """将 numpy 图像编码为 base64 JPEG"""
     return base64.b64encode(
-        _encode_image_bytes(image)
+        _encode_image_bytes(image, max_edge=max_edge, quality=quality)
     ).decode("utf-8")
 
 
-def _encode_image_bytes(image: np.ndarray) -> bytes:
+def _encode_image_bytes(
+    image: np.ndarray,
+    max_edge: int = VLM_MAX_IMAGE_EDGE,
+    quality: int = 92,
+) -> bytes:
     """将 numpy 图像编码为 JPEG 字节。"""
     img_pil = Image.fromarray(
         image.astype(np.uint8) if image.dtype != np.uint8
         else image
     )
-    if max(img_pil.size) > VLM_MAX_IMAGE_EDGE:
+    if max(img_pil.size) > max_edge:
         resampling = getattr(Image, "Resampling", Image).LANCZOS
-        img_pil.thumbnail(
-            (VLM_MAX_IMAGE_EDGE, VLM_MAX_IMAGE_EDGE),
-            resampling,
-        )
+        img_pil.thumbnail((max_edge, max_edge), resampling)
     buf = io.BytesIO()
-    img_pil.save(buf, format="JPEG", quality=92)
+    img_pil.save(buf, format="JPEG", quality=quality)
     return buf.getvalue()
 
 

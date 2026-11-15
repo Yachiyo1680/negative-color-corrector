@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,13 +10,21 @@ import numpy as np
 
 from core import mask_analyzer
 from core.cache import (
-    CACHE_VERSION,
+    DB_FILENAME,
     build_photo_cache_key,
     load_preprocessed_jpeg,
     store_preprocessed_jpeg,
 )
 from core.engine import CorrectionConfig, Engine
 from core.mask_analyzer import MaskResult
+
+
+def _db_entry_count(cache_dir: str) -> int:
+    conn = sqlite3.connect(Path(cache_dir) / DB_FILENAME)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM preprocess").fetchone()[0]
+    finally:
+        conn.close()
 
 
 class PreprocessCacheTests(unittest.TestCase):
@@ -34,7 +43,7 @@ class PreprocessCacheTests(unittest.TestCase):
             build_photo_cache_key(different_image),
         )
 
-    def test_jpeg_cache_round_trip(self):
+    def test_cache_round_trip_uses_single_sqlite_database(self):
         with tempfile.TemporaryDirectory() as tmp, \
              patch.dict(os.environ, {"NCC_CACHE_DIR": tmp}):
             key = "test-photo"
@@ -42,16 +51,55 @@ class PreprocessCacheTests(unittest.TestCase):
 
             self.assertTrue(store_preprocessed_jpeg(key, jpeg))
             self.assertEqual(load_preprocessed_jpeg(key), jpeg)
-            self.assertEqual(len(list(Path(tmp).glob("*.jpg"))), 1)
-            manifest = json.loads(
-                (Path(tmp) / "index.json").read_text(encoding="utf-8")
+
+            self.assertTrue((Path(tmp) / DB_FILENAME).exists())
+            self.assertEqual(_db_entry_count(tmp), 1)
+            # 不再产生每张照片一个的 JPEG 文件，也没有 JSON 索引。
+            self.assertEqual(list(Path(tmp).glob("*.jpg")), [])
+            self.assertFalse((Path(tmp) / "index.json").exists())
+
+    def test_corrupt_entry_is_removed(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.dict(os.environ, {"NCC_CACHE_DIR": tmp}):
+            self.assertTrue(store_preprocessed_jpeg("broken", b"not-a-jpeg"))
+
+            self.assertIsNone(load_preprocessed_jpeg("broken"))
+            self.assertEqual(_db_entry_count(tmp), 0)
+
+    def test_cache_evicts_least_recently_used_when_over_limit(self):
+        blob = b"\xff\xd8" + b"x" * (600 * 1024 - 2)
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.dict(os.environ, {
+                 "NCC_CACHE_DIR": tmp,
+                 "NCC_CACHE_MAX_MB": "1",
+             }):
+            self.assertTrue(store_preprocessed_jpeg("old", blob))
+            self.assertTrue(store_preprocessed_jpeg("middle", blob))
+            self.assertTrue(store_preprocessed_jpeg("new", blob))
+
+            # 1 MB 上限、三个 600 KB 条目 -> 只保留最新的一个。
+            self.assertIsNone(load_preprocessed_jpeg("old"))
+            self.assertIsNone(load_preprocessed_jpeg("middle"))
+            self.assertEqual(load_preprocessed_jpeg("new"), blob)
+            self.assertEqual(_db_entry_count(tmp), 1)
+
+    def test_first_store_cleans_legacy_cache_files(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.dict(os.environ, {"NCC_CACHE_DIR": tmp}):
+            legacy_jpeg = Path(tmp) / "preprocess-v2-abc.jpg"
+            legacy_manifest = Path(tmp) / "index.json"
+            legacy_jpeg.write_bytes(b"old")
+            legacy_manifest.write_text(
+                json.dumps({"version": "preprocess-v2"}),
+                encoding="utf-8",
             )
-            self.assertEqual(
-                manifest["entries"][key]["original_hash"], key)
-            self.assertEqual(
-                manifest["entries"][key]["file"],
-                f"{CACHE_VERSION}-{key}.jpg",
-            )
+
+            self.assertTrue(store_preprocessed_jpeg("k", b"\xff\xd8x"))
+
+            self.assertFalse(legacy_jpeg.exists())
+            self.assertFalse(legacy_manifest.exists())
+            self.assertEqual(_db_entry_count(tmp), 1)
 
     def test_same_photo_reuses_preprocess_across_model_parameters(self):
         image = np.full((40, 40, 3), 40000.0, dtype=np.float32)
@@ -86,7 +134,7 @@ class PreprocessCacheTests(unittest.TestCase):
 
             self.assertIsNotNone(first)
             self.assertEqual(prepare.call_count, 1)
-            self.assertEqual(len(list(Path(tmp).glob("*.jpg"))), 1)
+            self.assertEqual(_db_entry_count(tmp), 1)
 
             with patch(
                 "core.mask_analyzer._prepare_vlm_preview",

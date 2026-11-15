@@ -1,21 +1,41 @@
 """校正预处理缓存。
 
-缓存在反相前按照片内容命中，不包含模型、思考强度等模型参数。缓存文件放在
-配置文件所在目录的 cache/preprocess/ 下，用于复用与模型无关的预处理结果。
+缓存在反相前按照片内容命中，不包含模型、思考强度等模型参数。缓存内容保存在
+配置文件所在目录的 cache/preprocess/ 下，用一个 SQLite 数据库代替
+“每张照片一个 JPEG + JSON 索引”：
+  - 单文件、无需每次重写索引，原子写入且多进程安全；
+  - 记录最近使用时间，超过容量上限时自动淘汰最久未用的条目；
+  - 缓存是可重建数据，默认上限 1 GB（NCC_CACHE_MAX_MB 可调）。
 """
 
 import hashlib
-import json
 import os
-from datetime import datetime, timezone
+import sqlite3
+import time
+from contextlib import closing
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 
 
-CACHE_VERSION = "preprocess-v2"
-MANIFEST_FILENAME = "index.json"
+CACHE_VERSION = "preprocess-v3"
+DB_FILENAME = f"{CACHE_VERSION}.db"
+DEFAULT_MAX_CACHE_MB = 1024
+LEGACY_MANIFEST = "index.json"
+LEGACY_JPEG_GLOB = "preprocess-v*.jpg"
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS preprocess (
+    photo_key    TEXT PRIMARY KEY,
+    data         BLOB NOT NULL,
+    bytes        INTEGER NOT NULL,
+    created_at   INTEGER NOT NULL,   -- time.time_ns()
+    last_used_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_preprocess_last_used
+    ON preprocess(last_used_at);
+"""
 
 
 def cache_enabled() -> bool:
@@ -48,98 +68,160 @@ def build_photo_cache_key(image: np.ndarray) -> str:
     hasher.update(b"\0")
     hasher.update(str(contiguous.shape).encode("ascii"))
     hasher.update(b"\0")
-    hasher.update(contiguous.tobytes())
+    # 直接用缓冲区喂给 hasher，避免 tobytes() 为大体量 16-bit 扫描再复制一份内存。
+    hasher.update(memoryview(contiguous).cast("B"))
     return hasher.hexdigest()
 
 
-def _cache_path(photo_key: str) -> Path:
-    return cache_root() / f"{CACHE_VERSION}-{photo_key}.jpg"
+def _db_path() -> Path:
+    return cache_root() / DB_FILENAME
 
 
-def _manifest_path() -> Path:
-    return cache_root() / MANIFEST_FILENAME
-
-
-def _load_manifest() -> dict:
-    """读取照片 hash 索引；损坏时按空索引处理。"""
+def _max_cache_bytes() -> int:
+    raw = os.environ.get("NCC_CACHE_MAX_MB", "").strip()
     try:
-        data = json.loads(_manifest_path().read_text(encoding="utf-8"))
-        if data.get("version") == CACHE_VERSION:
-            entries = data.get("entries")
-            if isinstance(entries, dict):
-                return entries
-    except (OSError, ValueError, TypeError):
-        pass
-    return {}
+        megabytes = int(raw) if raw else DEFAULT_MAX_CACHE_MB
+    except ValueError:
+        megabytes = DEFAULT_MAX_CACHE_MB
+    return max(megabytes, 1) * 1024 * 1024
 
 
-def _store_manifest(entries: dict) -> bool:
-    """原子写入照片 hash 索引。"""
-    path = _manifest_path()
-    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    payload = {
-        "version": CACHE_VERSION,
-        "entries": entries,
-    }
+def _connect() -> sqlite3.Connection:
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fresh_database = not path.exists()
+
+    conn = sqlite3.connect(path, timeout=5.0)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        os.replace(tmp_path, path)
-        return True
-    except OSError as exc:
-        print(f"[Cache] 写入缓存索引失败: {exc}")
+        # auto_vacuum 必须在建表和切换 WAL 之前设置才会生效；
+        # FULL 让淘汰旧条目后数据库文件真正缩小，而不只是留下空闲页。
+        conn.execute("PRAGMA auto_vacuum=FULL")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.executescript(_SCHEMA)
+    except Exception:
+        conn.close()
+        raise
+
+    if fresh_database:
+        _cleanup_legacy()
+    return conn
+
+
+def _cleanup_legacy() -> None:
+    """首次创建新版数据库时清理旧版缓存文件（均为可重建数据）。"""
+    root = cache_root()
+    candidates = list(root.glob(LEGACY_JPEG_GLOB))
+    candidates.append(root / LEGACY_MANIFEST)
+
+    removed = 0
+    freed = 0
+    for path in candidates:
         try:
-            tmp_path.unlink(missing_ok=True)
+            size = path.stat().st_size
+            path.unlink()
         except OSError:
-            pass
-        return False
+            continue
+        removed += 1
+        freed += size
+
+    if removed:
+        print(f"[Cache] 已清理旧版缓存 {removed} 个文件"
+              f"（{freed / 1048576:.1f} MB）")
 
 
 def load_preprocessed_jpeg(photo_key: str) -> Optional[bytes]:
-    """读取预处理预览 JPEG；不存在或损坏时返回 None。"""
-    manifest_entry = _load_manifest().get(photo_key)
-    path = _cache_path(photo_key)
+    """从缓存数据库读取预处理预览 JPEG；不存在或损坏时返回 None。"""
+    if not cache_enabled():
+        return None
+
     try:
-        data = path.read_bytes()
-    except OSError:
+        with closing(_connect()) as conn:
+            row = conn.execute(
+                "SELECT data FROM preprocess WHERE photo_key = ?",
+                (photo_key,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            data = row[0]
+            if not data or len(data) < 2 or data[:2] != b"\xff\xd8":
+                with conn:
+                    conn.execute(
+                        "DELETE FROM preprocess WHERE photo_key = ?",
+                        (photo_key,),
+                    )
+                return None
+
+            with conn:
+                conn.execute(
+                    "UPDATE preprocess SET last_used_at = ? "
+                    "WHERE photo_key = ?",
+                    (time.time_ns(), photo_key),
+                )
+            return data
+    except (sqlite3.Error, OSError) as exc:
+        print(f"[Cache] 读取缓存失败: {exc}")
         return None
-    if len(data) < 2 or data[:2] != b"\xff\xd8":
-        return None
-    # 索引存在但缺少当前 hash 时仍可回退到文件名查找，兼容旧缓存。
-    if manifest_entry is not None:
-        expected_file = manifest_entry.get("file")
-        if expected_file and expected_file != path.name:
-            return None
-    return data
 
 
 def store_preprocessed_jpeg(photo_key: str, jpeg_bytes: bytes) -> bool:
-    """原子写入预处理预览 JPEG；写入失败不影响校正流程。"""
-    if not jpeg_bytes:
+    """写入预处理预览 JPEG；写入失败不影响校正流程。"""
+    if not cache_enabled() or not jpeg_bytes:
         return False
 
-    path = _cache_path(photo_key)
-    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    now = time.time_ns()
+    pruned = 0
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path.write_bytes(jpeg_bytes)
-        os.replace(tmp_path, path)
-        entries = _load_manifest()
-        entries[photo_key] = {
-            "original_hash": photo_key,
-            "file": path.name,
-            "bytes": len(jpeg_bytes),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        _store_manifest(entries)
+        with closing(_connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO preprocess
+                        (photo_key, data, bytes, created_at, last_used_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(photo_key) DO UPDATE SET
+                        data = excluded.data,
+                        bytes = excluded.bytes,
+                        last_used_at = excluded.last_used_at
+                    """,
+                    (photo_key, jpeg_bytes, len(jpeg_bytes), now, now),
+                )
+                pruned = _prune_entries(conn)
+                # auto_vacuum=FULL 会在提交时回收被删除条目占用的页，
+                # 因此这里不再需要额外 VACUUM。
+
+        if pruned:
+            print(f"[Cache] 缓存超出容量上限，已淘汰 {pruned} 条最久未用记录")
         return True
-    except OSError as exc:
-        print(f"[Cache] 写入预处理缓存失败: {exc}")
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+    except (sqlite3.Error, OSError) as exc:
+        print(f"[Cache] 写入缓存失败: {exc}")
         return False
+
+
+def _prune_entries(conn: sqlite3.Connection) -> int:
+    """按最久未用顺序淘汰条目，使缓存回落到上限的 90%。"""
+    limit = _max_cache_bytes()
+    total = conn.execute(
+        "SELECT COALESCE(SUM(bytes), 0) FROM preprocess"
+    ).fetchone()[0]
+    if total <= limit:
+        return 0
+
+    target = int(limit * 0.9)
+    rows = conn.execute(
+        "SELECT photo_key, bytes FROM preprocess "
+        "ORDER BY last_used_at ASC, created_at ASC, rowid ASC"
+    ).fetchall()
+
+    victims = []
+    for photo_key, size in rows:
+        if total <= target:
+            break
+        victims.append((photo_key,))
+        total -= size
+
+    if victims:
+        conn.executemany(
+            "DELETE FROM preprocess WHERE photo_key = ?", victims)
+    return len(victims)

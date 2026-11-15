@@ -23,6 +23,13 @@ from .cache import (
 )
 
 
+# 预览图只用于 VLM 定位中性灰区域；返回的坐标会归一化，最终 RGB 仍在
+# 原始全分辨率反相图上采样。因此无需保留原图细节：2048 边长足够判断
+# 材质与位置，却能把缓存体积降到 4096/quality92 的数分之一。
+PREVIEW_MAX_EDGE = 2048
+PREVIEW_JPEG_QUALITY = 90
+
+
 @dataclass
 class MaskResult:
     """色罩分析结果"""
@@ -129,7 +136,7 @@ def _vlm_find_neutral_gray(image: np.ndarray, vlm_config: dict) -> Optional[Mask
 
     VLM 失败或没有返回有效区域时返回 None。
     """
-    from .cast_detector import _encode_image
+    from .cast_detector import _encode_image_bytes
 
     prompt = """Analyze this already-inverted color-negative scan.
 
@@ -185,10 +192,14 @@ Return 1-3 credible regions. Return {"regions": []} only when no credible
             img_b64 = base64.b64encode(cached_jpeg).decode("utf-8")
         else:
             img_for_vlm = _prepare_vlm_preview(image, vlm_config)
-            img_b64 = _encode_image(img_for_vlm)
+            jpeg_bytes = _encode_image_bytes(
+                img_for_vlm,
+                max_edge=PREVIEW_MAX_EDGE,
+                quality=PREVIEW_JPEG_QUALITY,
+            )
+            img_b64 = base64.b64encode(jpeg_bytes).decode("utf-8")
             if use_cache:
-                stored = store_preprocessed_jpeg(
-                    photo_key, base64.b64decode(img_b64))
+                stored = store_preprocessed_jpeg(photo_key, jpeg_bytes)
                 if stored:
                     print("[MaskAnalyzer] 已写入预处理缓存")
 

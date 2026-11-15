@@ -1,4 +1,3 @@
-import base64
 import json
 import os
 import tempfile
@@ -183,11 +182,15 @@ class MaskAnalyzerTests(unittest.TestCase):
         image = np.full((40, 40, 3), 40000.0, dtype=np.float32)
         captured = {}
 
-        def fake_encode(preview):
+        def fake_encode(preview, **kwargs):
             captured["preview"] = preview.copy()
-            return base64.b64encode(b"encoded").decode("ascii")
+            captured["kwargs"] = kwargs
+            return b"encoded-jpeg"
 
-        with patch("core.cast_detector._encode_image", side_effect=fake_encode), \
+        with patch(
+                 "core.cast_detector._encode_image_bytes",
+                 side_effect=fake_encode,
+             ), \
              patch(
                  "core.cast_detector._call_vlm_api",
                  return_value=json.dumps({"regions": []}),
@@ -205,6 +208,10 @@ class MaskAnalyzerTests(unittest.TestCase):
         self.assertEqual(preview.dtype, np.uint8)
         self.assertEqual(preview.shape, image.shape)
         self.assertFalse(np.array_equal(preview, image.astype(np.uint8)))
+        self.assertEqual(
+            captured["kwargs"]["max_edge"],
+            mask_analyzer.PREVIEW_MAX_EDGE,
+        )
 
     def test_analyze_mask_falls_back_to_edge_after_vlm_failure(self):
         image = np.full((40, 40, 3), 40000.0, dtype=np.float32)
